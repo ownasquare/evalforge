@@ -1,0 +1,402 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import httpx
+from streamlit.testing.v1 import AppTest
+
+from evalforge.dashboard.client import ApiClient, ApiError
+
+APP_PATH = Path(__file__).parents[2] / "src" / "evalforge" / "dashboard" / "app.py"
+
+RUN_PAGE_SOURCE = """
+import streamlit as st
+from evalforge.dashboard.pages.run_evaluation import render
+from evalforge.dashboard.state import initialize_state
+
+st.set_page_config(page_title="EvalForge test", layout="wide")
+initialize_state()
+render()
+"""
+
+ASSET_PAGE_SOURCE = """
+import streamlit as st
+from evalforge.dashboard.pages.test_cases import render
+from evalforge.dashboard.state import initialize_state
+
+st.set_page_config(page_title="EvalForge assets test", layout="wide")
+initialize_state()
+render()
+"""
+
+
+def test_overview_renders_product_identity_when_api_is_offline(monkeypatch) -> None:
+    monkeypatch.setattr(ApiClient, "_request_response", _offline_transport)
+    app = AppTest.from_file(str(APP_PATH), default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    assert any("EvalForge" in title.value for title in app.title)
+    assert any("could not load" in str(element.value).lower() for element in app.error)
+
+
+def test_overview_has_deterministic_demo_recovery_copy(monkeypatch) -> None:
+    monkeypatch.setattr(ApiClient, "_request_response", _offline_transport)
+    app = AppTest.from_file(str(APP_PATH), default_timeout=15)
+
+    app.run()
+
+    messages = [str(element.value) for element in [*app.info, *app.caption, *app.subheader]]
+    assert any("deterministic demo" in message.lower() for message in messages)
+
+
+def test_overview_renders_populated_api_summary(monkeypatch) -> None:
+    routes: dict[str, Any] = {
+        "/health/live": {"status": "healthy"},
+        "/api/v1/overview": {
+            "totals": {
+                "runs": 7,
+                "result_success_rate": 0.875,
+                "mean_quality": 0.82,
+                "known_cost_micro_usd": 12500,
+            },
+            "recent_runs": [],
+        },
+        "/api/v1/capabilities": {
+            "demo_available": True,
+            "real_runs_enabled": False,
+        },
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes, []))
+    app = AppTest.from_file(str(APP_PATH), default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Total runs"] == "7"
+    assert metrics["Result success"] == "87.5%"
+    assert metrics["Mean quality"] == "0.820"
+    assert metrics["Known spend"] == "$0.0125"
+
+
+def test_run_page_submits_confirmed_demo_matrix(monkeypatch) -> None:
+    submitted: list[dict[str, Any]] = []
+    idempotency_keys: list[str] = []
+    preflight_payloads: list[dict[str, Any]] = []
+    routes: dict[str, Any] = {
+        "/api/v1/datasets": {"items": [{"id": "dataset-1", "name": "Support QA", "version": 1}]},
+        "/api/v1/datasets/dataset-1": {
+            "id": "dataset-1",
+            "name": "Support QA",
+            "version": 1,
+            "cases": [
+                {"id": "case-1", "external_id": "refund"},
+                {"id": "case-2", "external_id": "shipping"},
+            ],
+        },
+        "/api/v1/prompts": {"items": [{"id": "prompt-1", "name": "Helpful", "version": 1}]},
+        "/api/v1/models": {
+            "items": [
+                {
+                    "id": "model-1",
+                    "name": "Deterministic balanced",
+                    "provider": "deterministic",
+                    "api_mode": "deterministic",
+                }
+            ]
+        },
+        "/api/v1/capabilities": {
+            "demo_available": True,
+            "real_runs_enabled": False,
+            "limits": {"max_calls_per_run": 100},
+        },
+        "/api/v1/runs/run-1": {
+            "id": "run-1",
+            "status": "completed",
+            "completed_items": 2,
+            "total_items": 2,
+            "failed_items": 0,
+        },
+    }
+    monkeypatch.setattr(
+        ApiClient,
+        "_request_response",
+        _fake_transport(routes, submitted, idempotency_keys, preflight_payloads),
+    )
+    app = AppTest.from_string(RUN_PAGE_SOURCE, default_timeout=15)
+    app.run()
+    assert not app.checkbox
+    buttons = {button.label: button for button in app.button}
+    preflight = buttons["Validate server preflight"]
+    preflight.click().run()
+    buttons = {button.label: button for button in app.button}
+    submit = buttons["Submit evaluation run"]
+
+    submit.click().run()
+
+    assert not app.exception
+    assert submitted == [
+        {
+            "dataset_id": "dataset-1",
+            "prompt_ids": ["prompt-1"],
+            "model_ids": ["model-1"],
+            "acknowledge_real_cost": False,
+            "acknowledge_unknown_cost": False,
+        }
+    ]
+    assert preflight_payloads == [submitted[0]]
+    assert len(idempotency_keys) == 1
+    assert idempotency_keys[0]
+    assert "_evalforge_run_preflight" not in app.session_state
+    assert app.session_state["selected_run_id"] == "run-1"
+    assert app.session_state["active_run_id"] is None
+
+
+def test_real_run_requires_separate_unknown_pricing_acknowledgment(monkeypatch) -> None:
+    submitted: list[dict[str, Any]] = []
+    preflight_payloads: list[dict[str, Any]] = []
+    routes: dict[str, Any] = {
+        "/api/v1/datasets": {"items": [{"id": "dataset-1", "name": "Support QA", "version": 1}]},
+        "/api/v1/datasets/dataset-1": {
+            "id": "dataset-1",
+            "name": "Support QA",
+            "version": 1,
+            "cases": [{"id": "case-1", "external_id": "refund"}],
+        },
+        "/api/v1/prompts": {"items": [{"id": "prompt-1", "name": "Helpful", "version": 1}]},
+        "/api/v1/models": {
+            "items": [
+                {
+                    "id": "model-real",
+                    "name": "Unpriced Partner Model",
+                    "provider": "openai_compatible",
+                    "api_mode": "openai_compatible",
+                }
+            ]
+        },
+        "/api/v1/capabilities": {
+            "providers": {"real_runs_enabled": True},
+            "limits": {
+                "max_calls_per_run": 100,
+                "max_estimated_input_tokens_per_run": 100_000,
+                "max_estimated_cost_micro_usd_per_run": 1_000_000,
+            },
+        },
+        "/api/v1/runs/preflight": {
+            "case_count": 1,
+            "variant_count": 1,
+            "provider_call_count": 1,
+            "real_provider": True,
+            "unknown_pricing_models": ["Unpriced Partner Model"],
+            "estimated_input_tokens": 4_096,
+            "input_token_estimate_method": "conservative_utf8_byte_upper_bound_v1",
+            "estimated_known_cost_micro_usd": 12_500,
+            "cost_estimate_complete": False,
+        },
+        "/api/v1/runs/run-1": {
+            "id": "run-1",
+            "status": "completed",
+            "completed_items": 1,
+            "total_items": 1,
+            "failed_items": 0,
+        },
+    }
+    monkeypatch.setattr(
+        ApiClient,
+        "_request_response",
+        _fake_transport(routes, submitted, preflight_payloads=preflight_payloads),
+    )
+    app = AppTest.from_string(RUN_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+    checkboxes = {checkbox.label: checkbox for checkbox in app.checkbox}
+    assert len(checkboxes) == 1
+    real_cost_ack = checkboxes[
+        "I understand this sends benchmark content to configured providers and may incur cost."
+    ]
+    real_cost_ack.check().run()
+    buttons = {button.label: button for button in app.button}
+    buttons["Validate server preflight"].click().run()
+
+    assert not app.exception
+    checkboxes = {checkbox.label: checkbox for checkbox in app.checkbox}
+    unknown_cost_ack = checkboxes[
+        "I understand some selected models have unknown pricing and actual charges may be higher."
+    ]
+    buttons = {button.label: button for button in app.button}
+    assert buttons["Submit evaluation run"].disabled is True
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Padded UTF-8 input guard"] == "4,096"
+    assert metrics["Partial known-cost estimate"] == "$0.0125"
+    visible_text = [str(element.value) for element in [*app.warning, *app.text, *app.caption]]
+    assert any("Unpriced Partner Model" in value for value in visible_text)
+
+    unknown_cost_ack.check().run()
+    buttons = {button.label: button for button in app.button}
+    assert buttons["Submit evaluation run"].disabled is False
+    buttons["Submit evaluation run"].click().run()
+
+    assert preflight_payloads == [
+        {
+            "dataset_id": "dataset-1",
+            "prompt_ids": ["prompt-1"],
+            "model_ids": ["model-real"],
+            "acknowledge_real_cost": True,
+            "acknowledge_unknown_cost": False,
+        }
+    ]
+    assert submitted == [
+        {
+            **preflight_payloads[0],
+            "acknowledge_unknown_cost": True,
+        }
+    ]
+
+
+def test_real_run_with_complete_pricing_needs_only_general_cost_ack(monkeypatch) -> None:
+    routes: dict[str, Any] = {
+        "/api/v1/datasets": {"items": [{"id": "dataset-1", "name": "Support QA"}]},
+        "/api/v1/datasets/dataset-1": {
+            "id": "dataset-1",
+            "name": "Support QA",
+            "cases": [{"id": "case-1", "external_id": "refund"}],
+        },
+        "/api/v1/prompts": {"items": [{"id": "prompt-1", "name": "Helpful"}]},
+        "/api/v1/models": {
+            "items": [
+                {
+                    "id": "model-real",
+                    "name": "Priced Partner Model",
+                    "provider": "openai_compatible",
+                    "api_mode": "openai_compatible",
+                }
+            ]
+        },
+        "/api/v1/capabilities": {"providers": {"real_runs_enabled": True}},
+        "/api/v1/runs/preflight": {
+            "unknown_pricing_models": [],
+            "estimated_input_tokens": 2_048,
+            "estimated_known_cost_micro_usd": 25_000,
+            "cost_estimate_complete": True,
+        },
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes, []))
+    app = AppTest.from_string(RUN_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+    app.checkbox[0].check().run()
+    buttons = {button.label: button for button in app.button}
+    buttons["Validate server preflight"].click().run()
+
+    assert not app.exception
+    assert [checkbox.label for checkbox in app.checkbox] == [
+        "I understand this sends benchmark content to configured providers and may incur cost."
+    ]
+    buttons = {button.label: button for button in app.button}
+    assert buttons["Submit evaluation run"].disabled is False
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Known-cost estimate"] == "$0.0250"
+
+
+def test_asset_page_uses_truthful_mutation_and_hash_copy(monkeypatch) -> None:
+    routes: dict[str, Any] = {
+        "/api/v1/datasets": {"items": [{"id": "dataset-1", "name": "Support QA", "version": 1}]},
+        "/api/v1/datasets/dataset-1": {
+            "id": "dataset-1",
+            "name": "Support QA",
+            "cases": [
+                {
+                    "id": "case-1",
+                    "external_id": "refund",
+                    "input_text": "Can I get a refund?",
+                }
+            ],
+        },
+        "/api/v1/prompts": {
+            "items": [
+                {
+                    "id": "prompt-1",
+                    "name": "Helpful",
+                    "version": 1,
+                    "system_template": "Be helpful.",
+                    "user_template": "{input}",
+                    "template_hash": "a" * 64,
+                }
+            ]
+        },
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes, []))
+    app = AppTest.from_string(ASSET_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    button_labels = [button.label for button in app.button]
+    assert button_labels.count("Save changes") == 2
+    assert not any("new version" in label.lower() for label in button_labels)
+    code_values = [str(element.value) for element in app.code]
+    assert any("template_hash" in value for value in code_values)
+    assert not any("content_hash" in value for value in code_values)
+
+
+def _fake_transport(
+    routes: dict[str, Any],
+    submitted: list[dict[str, Any]],
+    idempotency_keys: list[str] | None = None,
+    preflight_payloads: list[dict[str, Any]] | None = None,
+):
+    def request_response(
+        _: ApiClient,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        if method == "POST" and path == "/api/v1/runs/preflight":
+            payload = kwargs.get("json_payload")
+            if isinstance(payload, dict) and preflight_payloads is not None:
+                preflight_payloads.append(payload)
+            return httpx.Response(
+                200,
+                json=routes.get(
+                    path,
+                    {
+                        "case_count": 2,
+                        "variant_count": 1,
+                        "provider_call_count": 2,
+                        "real_provider": False,
+                        "unknown_pricing_models": [],
+                        "estimated_input_tokens": 128,
+                        "input_token_estimate_method": ("conservative_utf8_byte_upper_bound_v1"),
+                        "estimated_known_cost_micro_usd": 0,
+                        "cost_estimate_complete": True,
+                    },
+                ),
+            )
+        if method == "POST" and path == "/api/v1/runs":
+            payload = kwargs.get("json_payload")
+            if isinstance(payload, dict):
+                submitted.append(payload)
+            headers = kwargs.get("headers")
+            if isinstance(headers, dict) and idempotency_keys is not None:
+                key = headers.get("Idempotency-Key")
+                if isinstance(key, str):
+                    idempotency_keys.append(key)
+            return httpx.Response(202, json={"id": "run-1", "status": "queued"})
+        payload = routes.get(path)
+        if payload is None:
+            return httpx.Response(404, json={"detail": "not found"})
+        return httpx.Response(200, json=payload)
+
+    return request_response
+
+
+def _offline_transport(
+    _client: ApiClient,
+    method: str,
+    path: str,
+    **_kwargs: Any,
+) -> httpx.Response:
+    raise ApiError(f"offline fixture for {method} {path}")

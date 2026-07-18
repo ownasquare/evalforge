@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1.7
+FROM ghcr.io/astral-sh/uv:0.8.17 AS uv
+
+FROM python:3.11.9-slim-bookworm AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH" \
+    EVALFORGE_DATABASE_URL=sqlite:////data/evalforge.db
+
+RUN groupadd --gid 10001 evalforge \
+    && useradd --uid 10001 --gid evalforge --create-home --shell /usr/sbin/nologin evalforge \
+    && mkdir -p /app /data \
+    && chown -R evalforge:evalforge /app /data
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+WORKDIR /app
+
+COPY --chown=evalforge:evalforge pyproject.toml uv.lock README.md LICENSE alembic.ini ./
+COPY --chown=evalforge:evalforge examples ./examples
+COPY --chown=evalforge:evalforge scripts ./scripts
+COPY --chown=evalforge:evalforge src ./src
+RUN uv sync --frozen --no-dev --no-editable
+
+USER evalforge
+EXPOSE 8000
+
+HEALTHCHECK --interval=20s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read()"]
+
+CMD ["python", "scripts/start_api.py"]

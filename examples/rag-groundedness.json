@@ -1,0 +1,62 @@
+{
+  "name": "Grounded product Q&A",
+  "description": "Retrieval-style cases that expose unsupported claims, numeric drift, and partial answers.",
+  "cases": [
+    {
+      "name": "Enterprise retention",
+      "input": "How long are Enterprise audit events retained?",
+      "expected_output": "Enterprise audit events are retained for 400 days.",
+      "context": ["The Enterprise plan retains audit events for 400 days. Standard retains them for 30 days."],
+      "relevance_keywords": ["Enterprise", "400 days", "audit events"],
+      "required_phrases": ["400 days"],
+      "tags": ["rag", "numeric"],
+      "criteria": {"max_words": 30}
+    },
+    {
+      "name": "Regional storage",
+      "input": "Which data residency regions are available?",
+      "expected_output": "Customers can choose United States, European Union, or Australia data residency.",
+      "context": [
+        "Data residency is available in three regions: United States, European Union, and Australia.",
+        "Region selection is made when the workspace is created."
+      ],
+      "relevance_keywords": ["United States", "European Union", "Australia"],
+      "required_phrases": ["United States", "European Union", "Australia"],
+      "tags": ["rag", "list"],
+      "criteria": {"max_words": 35}
+    },
+    {
+      "name": "Export format",
+      "input": "Can scheduled exports create Parquet files?",
+      "expected_output": "No. Scheduled exports currently support CSV and JSON, not Parquet.",
+      "context": ["Scheduled exports support CSV and JSON. Parquet export is not currently available."],
+      "relevance_keywords": ["CSV", "JSON", "not", "Parquet"],
+      "required_phrases": ["not", "Parquet"],
+      "tags": ["rag", "negation"],
+      "criteria": {"max_words": 30}
+    },
+    {
+      "name": "Support response time",
+      "input": "What is the initial response target for a severity-one incident?",
+      "expected_output": "The initial response target for a severity-one incident is 15 minutes, 24 hours a day.",
+      "context": [
+        "Severity one incidents have a 15-minute initial response target, available 24 hours a day.",
+        "Severity two incidents have a two-hour initial response target during business hours."
+      ],
+      "relevance_keywords": ["15 minutes", "severity one", "24 hours"],
+      "required_phrases": ["15 minutes"],
+      "tags": ["rag", "sla"],
+      "criteria": {"max_words": 35}
+    },
+    {
+      "name": "Unknown roadmap",
+      "input": "On what date will the quantum analytics feature launch?",
+      "expected_output": "The provided documentation does not specify a launch date for quantum analytics.",
+      "context": ["The public roadmap lists analytics improvements but does not mention quantum analytics or a launch date."],
+      "relevance_keywords": ["does not", "launch date", "documentation"],
+      "required_phrases": ["does not"],
+      "tags": ["rag", "abstention"],
+      "criteria": {"max_words": 35, "forbidden_phrases": ["launches on", "guaranteed"]}
+    }
+  ]
+}

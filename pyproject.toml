@@ -1,0 +1,125 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "evalforge-dashboard"
+version = "0.1.0"
+description = "Provider-neutral LLM evaluation dashboard with explainable metrics and immutable run provenance"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "EvalForge Contributors" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Framework :: FastAPI",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "alembic>=1.16,<2",
+  "fastapi==0.139.2",
+  "httpx==0.28.1",
+  "jsonschema>=4.25,<5",
+  "openai==2.46.0",
+  "pandas>=2.2,<3",
+  "plotly>=6.3,<7",
+  "prometheus-client>=0.22,<1",
+  "pydantic==2.13.4",
+  "pydantic-settings==2.14.2",
+  "python-multipart==0.0.32",
+  "sqlalchemy>=2.0.40,<2.1",
+  "streamlit==1.59.2",
+  "structlog>=25.4,<26",
+  "tenacity>=9.1,<10",
+  "typer>=0.16,<1",
+  "uvicorn[standard]==0.51.0",
+]
+
+[project.optional-dependencies]
+e2e = [
+  "playwright>=1.55,<2",
+  "pytest-playwright>=0.7,<1",
+]
+postgres = ["psycopg[binary]>=3.2,<4"]
+
+[project.scripts]
+evalforge = "evalforge.cli:app"
+
+[dependency-groups]
+dev = [
+  "bandit>=1.8,<2",
+  "hypothesis>=6.140,<7",
+  "httpx2>=2.7,<3",
+  "mypy>=1.18,<2",
+  "pip-audit>=2.9,<3",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "pytest-cov>=6.2,<8",
+  "pytest-socket>=0.7,<1",
+  "respx>=0.22,<1",
+  "ruff>=0.13,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/evalforge"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers -m 'not live and not e2e'"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+  "integration: exercises file-backed SQLite persistence",
+  "live: makes explicitly opted-in provider calls",
+  "ui: exercises the Streamlit presentation layer",
+  "e2e: exercises running services through a browser",
+]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+branch = true
+source = ["evalforge"]
+omit = [
+  "src/evalforge/dashboard/app.py",
+  "src/evalforge/dashboard/pages/*.py",
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "ASYNC", "S", "RUF"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S105", "S106", "S108"]
+"src/evalforge/migrations/**/*.py" = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+packages = ["evalforge"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["streamlit.*", "plotly.*", "pandas.*", "jsonschema.*"]
+ignore_missing_imports = true
+
+[tool.bandit]
+exclude_dirs = ["tests", "src/evalforge/migrations"]
+skips = ["B101"]
