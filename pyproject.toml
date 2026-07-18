@@ -48,6 +48,13 @@ postgres = ["psycopg[binary]>=3.2,<4"]
 [project.scripts]
 evalforge = "evalforge.cli:app"
 
+[project.urls]
+Homepage = "https://github.com/ownasquare/evalforge"
+Repository = "https://github.com/ownasquare/evalforge"
+Documentation = "https://github.com/ownasquare/evalforge/tree/main/docs"
+Issues = "https://github.com/ownasquare/evalforge/issues"
+Changelog = "https://github.com/ownasquare/evalforge/blob/main/CHANGELOG.md"
+
 [tool.uv]
 default-groups = []
 

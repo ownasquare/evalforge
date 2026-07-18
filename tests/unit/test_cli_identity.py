@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from click import unstyle
 from sqlalchemy import func, select
 from typer.testing import CliRunner
 
@@ -32,6 +33,12 @@ from evalforge.security.permissions import WorkspaceRole, local_workspace_contex
 ISSUER = "https://identity.example.test"
 SUBJECT = "operator-fixture-subject"
 EMAIL = "member@example.test"
+
+
+def _plain_cli_output(output: str) -> str:
+    """Remove Rich styling and make assertions independent of terminal wrapping."""
+
+    return " ".join(unstyle(output).split())
 
 
 @pytest.fixture
@@ -164,10 +171,11 @@ def test_identity_commands_expose_claim_keys_but_no_credential_parameter() -> No
     for command in ("membership-provision", "membership-revoke"):
         result = runner.invoke(cli.app, [command, "--help"])
         assert result.exit_code == 0
-        assert "--issuer" in result.output
-        assert "--subject" in result.output
-        assert "--token" not in result.output
-        assert "bearer" not in result.output.casefold()
+        output = _plain_cli_output(result.output)
+        assert "--issuer" in output
+        assert "--subject" in output
+        assert "--token" not in output
+        assert "bearer" not in output.casefold()
 
 
 def test_database_worker_rejects_sqlite_before_container_build(
@@ -379,7 +387,7 @@ def test_shared_seed_requires_workspace_before_migration_or_mutation(
     result = identity_runner.invoke(cli.app, ["seed"])
 
     assert result.exit_code != 0
-    assert "--workspace is required" in result.output
+    assert "--workspace is required" in _plain_cli_output(result.output)
     assert migration_called is False
 
 
@@ -521,7 +529,7 @@ def test_versioned_export_package_requires_disclosure_and_returns_auditable_rece
         ],
     )
     assert missing_profile.exit_code != 0
-    assert "--disclosure-profile" in missing_profile.output
+    assert "--disclosure-profile" in _plain_cli_output(missing_profile.output)
 
     arguments = [
         "export-package",

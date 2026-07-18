@@ -1,5 +1,8 @@
 # EvalForge
 
+[![CI](https://github.com/ownasquare/evalforge/actions/workflows/ci.yml/badge.svg)](https://github.com/ownasquare/evalforge/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-256078.svg)](LICENSE)
+
 **Compare prompts and models against the same test set before you ship.**
 
 EvalForge is a local-first evaluation dashboard for teams building with LLMs. It runs a shared set

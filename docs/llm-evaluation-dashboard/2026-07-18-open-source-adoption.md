@@ -12,6 +12,16 @@ The public claim is deliberately narrower than “production SaaS.” Hosted ide
 calibration, production ingress, backup and restore, and provider billing behavior still require
 proof in the environment where the project will be deployed.
 
+## Publication
+
+- Public repository: [ownasquare/evalforge](https://github.com/ownasquare/evalforge)
+- Default branch: `main`
+- Initial published release commit: `04a9d669644cf97b7a1835f4097c90abff49172b`
+- Repository visibility: public, with Issues enabled and the Wiki disabled
+- Security intake: GitHub private vulnerability reporting enabled
+- Repository topics: `ai-evaluation`, `fastapi`, `llm`, `llm-evaluation`,
+  `prompt-engineering`, `python`, `rag`, and `streamlit`
+
 ## Core workflow
 
 The dashboard now keeps the primary job visible:
@@ -53,6 +63,10 @@ workflow.
   configured, and 14 separately marked browser/live tests were deselected by the default suite.
 - Branch coverage: 84.22%, above the configured 80% threshold.
 - Static checks: Ruff, formatting, mypy, Bandit, and dependency vulnerability audit passed.
+- Hosted publication checks: PostgreSQL 3.11 and 3.12, Playwright E2E, and both container builds
+  passed on the initial published commit. The quality job exposed terminal-rendering-sensitive CLI
+  assertions; the follow-up normalizes styled and wrapped output and passes the exact hosted-style
+  command locally.
 - Browser acceptance: 13 of 13 Playwright end-to-end checks passed through the real
   Streamlit-to-FastAPI boundary.
 - Rendered layout: no horizontal overflow at 1280 px or 390 px; a fresh browser tab produced no
@@ -62,22 +76,20 @@ workflow.
   and the demo started on custom ports even when given a stale API URL override.
 - Runtime behavior: both health endpoints returned ready, Streamlit usage reporting and file
   watching were disabled, `Ctrl+C` stopped both services, and both test ports were released.
-- Documentation: all 46 local links across 15 public Markdown files resolved.
+- Documentation: all 46 local links across 16 public Markdown files resolved.
 - Public contract: project layout, extension examples, import examples, documentation, and
   generated-file exclusions are regression-tested.
 
-## Current release boundary
+## Remaining environment-specific validation
 
-The following are publish or deployment actions, not unfinished local product behavior:
+The following are deployment actions, not unfinished local product behavior:
 
-- Enable GitHub private vulnerability reporting before announcing the repository.
-- Add a Git remote and publish the reviewed commit and release tag.
-- Run the PostgreSQL job in CI or against an authorized local PostgreSQL URL.
 - Validate a real OIDC login, logout, role, and workspace journey in the hosted environment.
 - Perform an explicitly authorized provider calibration run before using scores as release gates.
 - Prove hosted TLS, storage, backup and restore, monitoring, retention, and production readback.
 
 ## Recommended release label
 
-Publish as `v0.1.0` public beta: a complete local LLM evaluation workbench with production-minded
-contracts, not a claim that every hosted deployment has already been certified.
+The repository is published as a public beta. When a formal GitHub release is desired, use
+`v0.1.0`: a complete local LLM evaluation workbench with production-minded contracts, not a claim
+that every hosted deployment has already been certified.
