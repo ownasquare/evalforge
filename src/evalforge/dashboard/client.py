@@ -236,6 +236,16 @@ class ApiClient:
     def run_comparison(self, run_id: str) -> JsonObject:
         return self._get_object(f"/api/v1/runs/{run_id}/comparison", cache_ttl=2.0)
 
+    def export_run(self, run_id: str, *, export_format: str = "json") -> bytes:
+        if export_format not in {"json", "csv"}:
+            raise ValueError("run export format must be json or csv")
+        response = self._request_response(
+            "GET",
+            f"/api/v1/runs/{run_id}/export",
+            params={"format": export_format},
+        )
+        return response.content
+
     def cancel_run(self, run_id: str) -> JsonObject:
         return self._request_object("POST", f"/api/v1/runs/{run_id}/cancel")
 

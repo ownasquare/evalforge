@@ -29,18 +29,22 @@ from evalforge.dashboard.pages.common import client, list_payload, load_resource
 from evalforge.dashboard.state import (
     active_run_id,
     clear_active_run,
+    navigate_to,
     select_run,
     set_flash,
 )
 
+_LAST_FINISHED_RUN_KEY = "_evalforge_last_finished_run_id"
+
 
 def render() -> None:
     page_header(
-        "Run evaluation",
-        "Build a controlled dataset by prompt by model matrix, review preflight, then submit once.",
-        eyebrow="Evaluation lab",
+        "New evaluation",
+        "Choose a benchmark and candidates, then review the exact run before starting.",
+        eyebrow="Evaluation setup",
     )
     render_flash()
+    _render_finished_run_action()
 
     current_run = active_run_id()
     if current_run:
@@ -79,10 +83,12 @@ def render() -> None:
             if not items
         ]
         render_empty_state(
-            "The evaluation matrix needs setup",
-            f"Add {', '.join(missing)} before starting a run.",
+            "Finish benchmark setup first",
+            f"Add {', '.join(missing)} before starting an evaluation.",
             icon=":material/checklist:",
         )
+        if st.button("Open benchmarks", icon=":material/arrow_forward:"):
+            navigate_to("test_cases")
         return
 
     dataset_options = option_map(datasets, fallback="Dataset")
@@ -91,41 +97,60 @@ def render() -> None:
     dataset_by_id = {resource_id(item): item for item in datasets}
     model_by_id = {resource_id(item): item for item in models}
 
-    st.subheader("1. Choose the benchmark")
-    dataset_id = st.selectbox(
-        "Dataset",
-        options=list(dataset_options),
-        format_func=lambda value: dataset_options.get(value, value),
-        help="Every selected prompt/model candidate runs against this versioned dataset.",
-    )
+    st.subheader("1. Name and benchmark")
+    with st.container(border=True):
+        dataset_id = st.selectbox(
+            "Benchmark dataset",
+            options=list(dataset_options),
+            format_func=lambda value: dataset_options.get(value, value),
+            help="Every selected candidate runs against this versioned dataset.",
+        )
+        suggested_name = f"{dataset_options.get(dataset_id, 'Benchmark')} review"
+        run_name = st.text_input(
+            "Run name",
+            value=suggested_name,
+            max_chars=200,
+            placeholder="For example: Support answers — release candidate",
+            help="A clear name makes run history and exports easier to find later.",
+        )
     dataset_detail, dataset_detail_error = load_resource(
         "selected dataset", lambda: api.dataset(dataset_id)
     )
 
-    st.subheader("2. Choose candidate variants")
-    left, right = st.columns(2)
-    with left:
-        prompt_defaults = list(prompt_options)[:1]
-        prompt_ids = st.multiselect(
-            "Prompt versions",
-            options=list(prompt_options),
-            default=prompt_defaults,
-            format_func=lambda value: prompt_options.get(value, value),
-        )
-    with right:
-        demo_model_ids = [
-            model_id for model_id, model in model_by_id.items() if is_demo_record(model)
-        ][:2]
-        model_ids = st.multiselect(
-            "Model profiles",
-            options=list(model_options),
-            default=demo_model_ids or list(model_options)[:1],
-            format_func=lambda value: model_options.get(value, value),
-        )
+    st.subheader("2. Candidates")
+    with st.container(border=True):
+        left, right = st.columns(2)
+        with left:
+            prompt_defaults = list(prompt_options)[:1]
+            prompt_ids = st.multiselect(
+                "Prompt versions",
+                options=list(prompt_options),
+                default=prompt_defaults,
+                format_func=lambda value: prompt_options.get(value, value),
+                help="Each selected prompt is paired with every selected model profile.",
+            )
+        with right:
+            demo_model_ids = [
+                model_id for model_id, model in model_by_id.items() if is_demo_record(model)
+            ][:2]
+            model_ids = st.multiselect(
+                "Model profiles",
+                options=list(model_options),
+                default=demo_model_ids or list(model_options)[:1],
+                format_func=lambda value: model_options.get(value, value),
+                help="The first prompt/model pair becomes the comparison baseline.",
+            )
 
     selected_models = [model_by_id[model_id] for model_id in model_ids if model_id in model_by_id]
     has_real_provider = any(not is_demo_record(model) for model in selected_models)
     render_demo_banner(synthetic=not has_real_provider)
+    _render_candidate_preview(
+        prompt_ids=prompt_ids,
+        model_ids=model_ids,
+        prompt_options=prompt_options,
+        model_options=model_options,
+        model_by_id=model_by_id,
+    )
 
     if isinstance(dataset_detail, dict):
         dataset = dataset_detail
@@ -136,7 +161,7 @@ def render() -> None:
     max_calls = _limit(capabilities, "max_calls_per_run", "max_run_items")
     real_enabled = _real_runs_enabled(capabilities)
 
-    st.subheader("3. Review preflight")
+    st.subheader("3. Check and start")
     preflight_columns = st.columns(4)
     preflight_columns[0].metric("Test cases", format_count(case_count))
     preflight_columns[1].metric("Prompt versions", format_count(len(prompt_ids)))
@@ -148,6 +173,8 @@ def render() -> None:
     )
 
     blockers: list[str] = []
+    if not run_name.strip():
+        blockers.append("Enter a run name.")
     if not prompt_ids:
         blockers.append("Select at least one prompt version.")
     if not model_ids:
@@ -176,6 +203,7 @@ def render() -> None:
         st.warning(blocker, icon=":material/warning:")
 
     preflight_payload = {
+        "name": run_name.strip(),
         "dataset_id": dataset_id,
         "prompt_ids": prompt_ids,
         "model_ids": model_ids,
@@ -183,14 +211,15 @@ def render() -> None:
         "acknowledge_unknown_cost": False,
     }
     signature = (
+        run_name.strip(),
         dataset_id,
         tuple(prompt_ids),
         tuple(model_ids),
         bool(has_real_provider and acknowledged),
     )
     if st.button(
-        "Validate server preflight",
-        icon=":material/fact_check:",
+        "Check setup",
+        icon=":material/check_circle:",
         disabled=bool(blockers),
         width="stretch",
     ):
@@ -218,6 +247,7 @@ def render() -> None:
     acknowledged_unknown_cost = False
     if preflight_ready:
         _render_server_estimates(preflight_data)
+        _render_metric_coverage(preflight_data, case_count=case_count)
         if requires_unknown_cost_ack:
             st.warning(
                 "The known-cost estimate is partial because these real-provider models do not "
@@ -243,20 +273,20 @@ def render() -> None:
                     icon=":material/warning:",
                 )
         if not requires_unknown_cost_ack or acknowledged_unknown_cost:
-            st.success("Server preflight passed. The matrix is ready to submit.")
-        with st.expander("Server preflight evidence", icon=":material/verified:"):
+            st.success("Setup checked. This evaluation is ready to start.")
+        with st.expander("Technical details", icon=":material/data_object:"):
             safe_json_panel("Validated plan", preflight_data)
     elif not blockers:
-        st.info("Run server preflight to unlock submission.", icon=":material/policy:")
+        st.info("Check the setup to unlock the evaluation.", icon=":material/policy:")
 
     payload = {
         **preflight_payload,
         "acknowledge_unknown_cost": bool(requires_unknown_cost_ack and acknowledged_unknown_cost),
     }
     submitted = st.button(
-        "Submit evaluation run",
+        "Start evaluation",
         type="primary",
-        icon=":material/rocket_launch:",
+        icon=":material/play_arrow:",
         disabled=(
             bool(blockers)
             or not preflight_ready
@@ -285,7 +315,7 @@ def render() -> None:
                 )
             else:
                 select_run(run_id, active=True)
-                st.success("Evaluation queued. Live progress will appear here.")
+                st.success("Evaluation queued. Progress will appear here.")
                 st.rerun()
 
 
@@ -320,6 +350,7 @@ def _poll_active_run(run_id: str) -> None:
         st.caption(f"Errors recorded: {format_count(failed)}")
         if is_terminal_status(status):
             clear_active_run()
+            st.session_state[_LAST_FINISHED_RUN_KEY] = run_id
             if status.lower() == "completed":
                 set_flash("Evaluation completed. Results are ready to inspect.")
             else:
@@ -329,6 +360,62 @@ def _poll_active_run(run_id: str) -> None:
                 )
             select_run(run_id)
             st.rerun(scope="app")
+
+
+def _render_finished_run_action() -> None:
+    run_id = st.session_state.get(_LAST_FINISHED_RUN_KEY)
+    if not isinstance(run_id, str) or not run_id:
+        return
+    with st.container(border=True):
+        message, review, dismiss = st.columns([3, 1, 1], vertical_alignment="center")
+        with message:
+            st.subheader("Results are ready")
+            st.caption("Review case evidence first, then compare candidates on shared cases.")
+        with review:
+            if st.button(
+                "Review results",
+                type="primary",
+                icon=":material/arrow_forward:",
+                width="stretch",
+            ):
+                select_run(run_id)
+                st.session_state.pop(_LAST_FINISHED_RUN_KEY, None)
+                navigate_to("run_detail")
+        with dismiss:
+            if st.button("Dismiss", width="stretch"):
+                st.session_state.pop(_LAST_FINISHED_RUN_KEY, None)
+                st.rerun()
+
+
+def _render_candidate_preview(
+    *,
+    prompt_ids: list[str],
+    model_ids: list[str],
+    prompt_options: dict[str, str],
+    model_options: dict[str, str],
+    model_by_id: dict[str, JsonObject],
+) -> None:
+    rows: list[dict[str, str]] = []
+    for prompt_id in prompt_ids:
+        for model_id in model_ids:
+            model = model_by_id.get(model_id, {})
+            rows.append(
+                {
+                    "Role": "Baseline" if not rows else "Challenger",
+                    "Prompt": prompt_options.get(prompt_id, prompt_id),
+                    "Model": model_options.get(model_id, model_id),
+                    "Execution": "Offline demo" if is_demo_record(model) else "External provider",
+                }
+            )
+    if not rows:
+        st.caption("Choose at least one prompt and model to build the candidate matrix.")
+        return
+    st.caption("Candidate matrix")
+    st.dataframe(rows, hide_index=True, width="stretch")
+    st.caption(
+        "The first prompt/model pair is the comparison baseline. Every other pair is compared "
+        "with it on the same test cases."
+    )
 
 
 def _case_count(dataset: JsonObject) -> int:
@@ -369,6 +456,27 @@ def _unknown_pricing_models(preflight: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if isinstance(item, str) and item.strip()]
+
+
+def _render_metric_coverage(preflight: JsonObject, *, case_count: int) -> None:
+    counts = preflight.get("inapplicable_counts")
+    if not isinstance(counts, dict):
+        return
+    unavailable = [
+        (str(name), count)
+        for name, count in counts.items()
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0
+    ]
+    if not unavailable:
+        st.caption("All reference- and context-dependent metrics have evidence for every case.")
+        return
+    st.caption("Metric coverage")
+    for name, count in unavailable:
+        readable = name.replace("_", " ").title()
+        st.caption(
+            f"{readable}: not scored for {count:,} of {case_count:,} cases because the required "
+            "reference or context is missing."
+        )
 
 
 def _render_server_estimates(preflight: JsonObject) -> None:

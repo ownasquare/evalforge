@@ -1,42 +1,37 @@
-"""Portfolio-level evaluation overview."""
+"""Evaluation workspace overview backed only by published aggregate data."""
 
 from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
-import plotly.express as px
 import streamlit as st
 
-from evalforge.dashboard.client import collection_items
 from evalforge.dashboard.components import (
     MetricCard,
     first_value,
     format_count,
-    format_currency,
     format_micro_usd,
     format_percent,
     format_score,
     format_timestamp,
     page_header,
     render_api_error,
-    render_demo_banner,
     render_empty_state,
     render_metric_cards,
     render_partial_state,
     render_status_badge,
+    resource_id,
     resource_label,
-    style_figure,
 )
 from evalforge.dashboard.pages.common import client, load_resource, nested_summary
-from evalforge.dashboard.state import navigate_to
+from evalforge.dashboard.state import navigate_to, select_run
 
 
 def render() -> None:
     page_header(
-        "EvalForge overview",
-        "A production-minded view of benchmark quality, reliability, latency, and cost.",
-        eyebrow="LLM evaluation control room",
+        "Evaluation workspace",
+        "Review recent evaluations and open the work that needs attention.",
+        eyebrow="Workspace",
     )
 
     api = client()
@@ -44,252 +39,175 @@ def render() -> None:
     capabilities, capability_error = load_resource("provider capabilities", api.capabilities)
 
     if overview_error:
-        render_api_error(overview_error)
+        render_api_error(overview_error, title="The evaluation workspace is unavailable")
         render_empty_state(
-            "No overview is available yet",
-            "Start the FastAPI service, seed the deterministic demo, then retry this page.",
+            "Reconnect the local service",
+            "Once it is available, the deterministic demo can run without a provider key.",
             icon=":material/monitor_heart:",
         )
         return
     if not isinstance(overview, dict):
         render_empty_state(
-            "No evaluation data yet",
-            "Create a benchmark and submit your first run.",
+            "No workspace data is available",
+            "Start a deterministic evaluation to create the first evidence set.",
         )
         return
 
     summary = nested_summary(overview)
-    data_mode_value = first_value(overview, "data_mode", "integrity")
-    if data_mode_value is not None:
-        data_mode = str(data_mode_value).lower()
-        synthetic = data_mode in {"demo", "deterministic", "fixture", "synthetic", "offline"}
-        render_demo_banner(synthetic=synthetic)
-    else:
-        st.info(
-            "Deterministic demo execution is available. Individual runs retain their own "
-            "provider and provenance labels.",
-            icon=":material/science:",
-        )
+    recent = _records(first_value(overview, "recent_runs", default=[]))
     if capability_error:
         render_partial_state(
-            "Evaluation analytics loaded, but provider capability status is temporarily "
-            "unavailable."
+            "Evaluation data loaded, but current execution capability could not be confirmed."
         )
+    _render_workspace_mode(capabilities)
 
-    quality_pass_rate = first_value(summary, "pass_rate", "overall_pass_rate")
-    result_success_rate = first_value(summary, "result_success_rate")
-    render_metric_cards(
-        [
-            MetricCard(
-                "Total runs",
-                format_count(first_value(summary, "total_runs", "run_count", "runs")),
-                help_text="All persisted evaluation runs in this environment.",
-            ),
-            MetricCard(
-                "Pass rate" if quality_pass_rate is not None else "Result success",
-                format_percent(
-                    quality_pass_rate if quality_pass_rate is not None else result_success_rate
-                ),
-                help_text=(
-                    "Applicable results meeting their stored thresholds."
-                    if quality_pass_rate is not None
-                    else "Results completed without an execution error."
-                ),
-            ),
-            MetricCard(
-                "Mean quality",
-                format_score(
-                    first_value(
-                        summary,
-                        "mean_score",
-                        "average_score",
-                        "quality_score",
-                        "mean_quality",
-                    )
-                ),
-                help_text="Weighted mean over applicable quality metrics only.",
-            ),
-            MetricCard(
-                _overview_cost_label(summary),
-                _overview_cost(summary),
-                help_text=(
-                    "Sum of results with recorded pricing; unpriced results are excluded."
-                    if summary.get("known_cost_micro_usd") is not None
-                    else "Estimate reported by the API; unavailable pricing is not treated as zero."
-                ),
-            ),
-        ]
-    )
-
-    action_left, action_right = st.columns([2, 1], vertical_alignment="center")
-    with action_left:
-        st.subheader("Run the offline benchmark")
+    action_copy, action = st.columns([3, 1], vertical_alignment="center")
+    with action_copy:
+        st.subheader("Continue evaluating")
         st.caption(
-            "Use deterministic model profiles to validate the entire workflow without an API key."
+            "Use a saved benchmark to compare prompt and model candidates on the same cases."
         )
-    with action_right:
+    with action:
         if st.button(
-            "Start deterministic evaluation",
+            "New evaluation",
             type="primary",
-            icon=":material/play_arrow:",
+            icon=":material/add:",
             width="stretch",
         ):
             navigate_to("run_evaluation")
 
-    _render_trends_and_leaderboard(overview)
-    _render_failures_and_activity(overview)
-    _render_capability_note(capabilities)
-
-
-def _render_trends_and_leaderboard(overview: dict[str, Any]) -> None:
-    trend_data = first_value(overview, "trend", "score_trend", "quality_trend", default=[])
-    leaderboard = first_value(
-        overview,
-        "leaderboard",
-        "candidate_leaderboard",
-        "candidates",
-        default=[],
+    render_metric_cards(
+        [
+            MetricCard(
+                "Runs",
+                format_count(first_value(summary, "runs", "total_runs", "run_count")),
+                help_text="All persisted evaluation runs in this workspace.",
+            ),
+            MetricCard(
+                "Completed",
+                format_count(first_value(summary, "completed_runs")),
+                help_text="Runs that reached a completed terminal state.",
+            ),
+            MetricCard(
+                "Results checked",
+                format_count(first_value(summary, "evaluated_results", "results")),
+                help_text="Result rows that reached a completed or error outcome.",
+            ),
+            MetricCard(
+                "Average quality",
+                format_score(first_value(summary, "mean_quality", "mean_score")),
+                help_text="Mean aggregate score over results with applicable quality evidence.",
+            ),
+        ]
     )
-    left, right = st.columns([3, 2])
-    with left:
-        st.subheader("Quality trend")
-        trend_items = collection_items(trend_data) if isinstance(trend_data, dict) else trend_data
-        if isinstance(trend_items, list) and trend_items:
-            frame = pd.DataFrame(trend_items)
-            x_name = _first_column(frame, ("created_at", "timestamp", "date", "run"))
-            y_name = _first_column(frame, ("mean_score", "score", "quality", "pass_rate"))
-            if x_name and y_name:
-                figure = px.line(
-                    frame,
-                    x=x_name,
-                    y=y_name,
-                    markers=True,
-                    color_discrete_sequence=["#6558F5"],
-                )
-                figure.update_yaxes(range=[0, 1], title="Quality score")
-                figure.update_xaxes(title=None)
-                st.plotly_chart(
-                    style_figure(figure),
-                    width="stretch",
-                    config={"displayModeBar": False},
-                )
-            else:
-                render_empty_state(
-                    "Trend needs more runs",
-                    "Run at least two comparable benchmarks.",
-                )
-        else:
-            render_empty_state(
-                "Trend needs more runs",
-                "Run at least two comparable benchmarks.",
-            )
 
-    with right:
-        st.subheader("Candidate leaderboard")
-        candidate_items = (
-            collection_items(leaderboard) if isinstance(leaderboard, dict) else leaderboard
+    if not _positive_int(first_value(summary, "runs", "total_runs", default=0)):
+        render_empty_state(
+            "Your workspace is ready",
+            "Run the local sample to see scores, case evidence, and candidate comparisons.",
+            icon=":material/check_circle:",
         )
-        if isinstance(candidate_items, list) and candidate_items:
-            for position, candidate in enumerate(candidate_items[:5], start=1):
-                if not isinstance(candidate, dict):
-                    continue
-                with st.container(border=True):
-                    name = resource_label(candidate, fallback=f"Candidate {position}")
-                    st.text(f"{position}. {name}")
-                    score = first_value(candidate, "mean_score", "score", "quality_score")
-                    st.metric("Mean quality", format_score(score))
-        else:
-            render_empty_state(
-                "No candidates ranked",
-                "A completed run with two or more candidates will populate this leaderboard.",
-            )
+
+    recent_column, evidence_column = st.columns([3, 2])
+    with recent_column:
+        _render_recent_runs(recent)
+    with evidence_column:
+        _render_evidence_coverage(summary)
 
 
-def _render_failures_and_activity(overview: dict[str, Any]) -> None:
-    failures = first_value(overview, "failure_categories", "failures", "error_taxonomy", default=[])
-    activity = first_value(overview, "recent_runs", "recent_activity", "runs", default=[])
-    left, right = st.columns([2, 3])
-    with left:
-        st.subheader("Failure categories")
-        failure_items = collection_items(failures) if isinstance(failures, dict) else failures
-        if isinstance(failure_items, list) and failure_items:
-            frame = pd.DataFrame(failure_items)
-            category = _first_column(frame, ("category", "name", "error_type"))
-            count = _first_column(frame, ("count", "total", "value"))
-            if category and count:
-                figure = px.bar(
-                    frame,
-                    x=count,
-                    y=category,
-                    orientation="h",
-                    color_discrete_sequence=["#EF6A67"],
-                )
-                figure.update_layout(showlegend=False)
-                st.plotly_chart(
-                    style_figure(figure, height=300),
-                    width="stretch",
-                    config={"displayModeBar": False},
-                )
-        else:
-            st.success("No recorded evaluation failures.", icon=":material/check_circle:")
-
-    with right:
-        st.subheader("Recent activity")
-        activity_items = collection_items(activity) if isinstance(activity, dict) else activity
-        if isinstance(activity_items, list) and activity_items:
-            for run in activity_items[:6]:
-                if not isinstance(run, dict):
-                    continue
-                columns = st.columns([3, 1, 2], vertical_alignment="center")
-                with columns[0]:
-                    st.text(resource_label(run, fallback="Evaluation run"))
-                with columns[1]:
-                    render_status_badge(str(first_value(run, "status", default="unknown")))
-                with columns[2]:
-                    st.caption(format_timestamp(first_value(run, "created_at", "started_at")))
-        else:
-            render_empty_state("No recent runs", "Submitted evaluations will appear here.")
+def _render_workspace_mode(capabilities: Any) -> None:
+    if _real_runs_enabled(capabilities):
+        st.caption(
+            "External provider execution is available. Every paid run still requires explicit "
+            "cost review."
+        )
+    else:
+        st.caption(
+            "Offline demo workspace · Deterministic fixtures are available without provider "
+            "requests or billable usage."
+        )
 
 
-def _render_capability_note(capabilities: Any) -> None:
+def _real_runs_enabled(capabilities: Any) -> bool:
     if not isinstance(capabilities, dict):
-        return
-    demo_available = bool(
-        first_value(capabilities, "demo_available", "deterministic_available", default=True)
-    )
-    real_enabled = _real_runs_enabled(capabilities)
-    with st.expander("Execution capability", icon=":material/settings_input_component:"):
-        st.write(
-            "Deterministic offline execution is available."
-            if demo_available
-            else "Deterministic execution is unavailable."
-        )
-        st.write(
-            "Real-provider runs are enabled with backend-side controls."
-            if real_enabled
-            else "Real-provider runs are disabled; no paid call can be started from this dashboard."
-        )
-
-
-def _first_column(frame: pd.DataFrame, names: tuple[str, ...]) -> str | None:
-    return next((name for name in names if name in frame.columns), None)
-
-
-def _overview_cost(summary: dict[str, Any]) -> str:
-    micro_usd = summary.get("known_cost_micro_usd")
-    if micro_usd is not None:
-        return format_micro_usd(micro_usd)
-    return format_currency(first_value(summary, "estimated_cost", "total_cost_usd", "cost_usd"))
-
-
-def _overview_cost_label(summary: dict[str, Any]) -> str:
-    return "Known spend" if summary.get("known_cost_micro_usd") is not None else "Estimated spend"
-
-
-def _real_runs_enabled(capabilities: dict[str, Any]) -> bool:
-    direct = first_value(capabilities, "real_runs_enabled")
-    if isinstance(direct, bool):
-        return direct
+        return False
+    direct = capabilities.get("real_runs_enabled")
     providers = capabilities.get("providers")
     nested = providers.get("real_runs_enabled") if isinstance(providers, dict) else False
-    return nested if isinstance(nested, bool) else False
+    return direct is True or nested is True
+
+
+def _render_recent_runs(runs: list[dict[str, Any]]) -> None:
+    st.subheader("Recent evaluations")
+    if not runs:
+        render_empty_state(
+            "No recent evaluations",
+            "Finished and active runs will appear here.",
+            icon=":material/history:",
+        )
+        return
+
+    for run in runs[:8]:
+        run_id = resource_id(run)
+        fallback = f"Run {run_id[:8]}" if run_id else "Evaluation run"
+        name = resource_label(run, fallback=fallback)
+        completed = _nonnegative_int(first_value(run, "completed_items", default=0))
+        total = _nonnegative_int(first_value(run, "total_items", default=0))
+        with st.container(border=True):
+            identity, action = st.columns([4, 1.2], vertical_alignment="center")
+            with identity:
+                st.text(name)
+                render_status_badge(str(first_value(run, "status", default="unknown")))
+                detail_parts: list[str] = []
+                if total:
+                    detail_parts.append(f"{completed:,} of {total:,} results")
+                detail_parts.append(format_timestamp(first_value(run, "created_at", "started_at")))
+                st.caption(" · ".join(detail_parts))
+            with action:
+                if run_id and st.button(
+                    "View",
+                    key=f"open-overview-run-{run_id}",
+                    width="stretch",
+                ):
+                    select_run(run_id)
+                    navigate_to("run_detail")
+
+
+def _render_evidence_coverage(summary: dict[str, Any]) -> None:
+    st.subheader("Evidence coverage")
+    total_results = _nonnegative_int(first_value(summary, "results", default=0))
+    known_items = _nonnegative_int(first_value(summary, "known_cost_items", default=0))
+    ambiguous = _nonnegative_int(first_value(summary, "billing_ambiguous_results", default=0))
+    unavailable = _nonnegative_int(first_value(summary, "unavailable_cost_results", default=0))
+    success_rate = first_value(summary, "result_success_rate")
+
+    with st.container(border=True):
+        if known_items:
+            st.text(format_micro_usd(first_value(summary, "known_cost_micro_usd")))
+            st.caption(f"Recorded pricing covers {known_items:,} of {total_results:,} results.")
+        else:
+            st.text("Pricing is unavailable")
+            st.caption("No result in this workspace has recorded pricing evidence yet.")
+
+        st.divider()
+        st.text(f"Result success · {format_percent(success_rate)}")
+        if ambiguous:
+            st.caption(f"{ambiguous:,} results have billing-ambiguous provider evidence.")
+        if unavailable:
+            st.caption(f"{unavailable:,} results do not have usable pricing evidence.")
+        if not ambiguous and not unavailable:
+            st.caption("No pricing-evidence gaps are recorded in the current totals.")
+
+
+def _records(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _nonnegative_int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _positive_int(value: Any) -> bool:
+    return _nonnegative_int(value) > 0

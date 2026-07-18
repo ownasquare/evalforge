@@ -39,7 +39,7 @@ def test_overview_renders_product_identity_when_api_is_offline(monkeypatch) -> N
 
     assert not app.exception
     assert any("EvalForge" in title.value for title in app.title)
-    assert any("could not load" in str(element.value).lower() for element in app.error)
+    assert any("unavailable" in str(element.value).lower() for element in app.error)
 
 
 def test_overview_has_deterministic_demo_recovery_copy(monkeypatch) -> None:
@@ -58,11 +58,26 @@ def test_overview_renders_populated_api_summary(monkeypatch) -> None:
         "/api/v1/overview": {
             "totals": {
                 "runs": 7,
+                "completed_runs": 6,
+                "results": 80,
+                "evaluated_results": 72,
                 "result_success_rate": 0.875,
                 "mean_quality": 0.82,
                 "known_cost_micro_usd": 12500,
+                "known_cost_items": 64,
+                "billing_ambiguous_results": 2,
+                "unavailable_cost_results": 6,
             },
-            "recent_runs": [],
+            "recent_runs": [
+                {
+                    "id": "run-1",
+                    "name": "Support release review",
+                    "status": "completed",
+                    "completed_items": 10,
+                    "total_items": 10,
+                    "created_at": "2026-07-18T03:49:00+00:00",
+                }
+            ],
         },
         "/api/v1/capabilities": {
             "demo_available": True,
@@ -76,10 +91,50 @@ def test_overview_renders_populated_api_summary(monkeypatch) -> None:
 
     assert not app.exception
     metrics = {metric.label: metric.value for metric in app.metric}
-    assert metrics["Total runs"] == "7"
-    assert metrics["Result success"] == "87.5%"
-    assert metrics["Mean quality"] == "0.820"
-    assert metrics["Known spend"] == "$0.0125"
+    assert metrics["Runs"] == "7"
+    assert metrics["Completed"] == "6"
+    assert metrics["Results checked"] == "72"
+    assert metrics["Average quality"] == "0.820"
+    visible = [str(element.value) for element in [*app.text, *app.caption, *app.info]]
+    assert any("$0.0125" in value for value in visible)
+    assert any("64 of 80" in value for value in visible)
+    assert not any(
+        heading in [element.value for element in app.subheader]
+        for heading in ("Quality trend", "Candidate leaderboard", "Failure categories")
+    )
+
+
+def test_overview_never_presents_missing_pricing_as_zero_spend(monkeypatch) -> None:
+    routes: dict[str, Any] = {
+        "/health/live": {"status": "healthy"},
+        "/api/v1/overview": {
+            "totals": {
+                "runs": 1,
+                "completed_runs": 1,
+                "results": 5,
+                "evaluated_results": 5,
+                "result_success_rate": 1.0,
+                "mean_quality": 0.8,
+                "known_cost_micro_usd": None,
+                "known_cost_items": 0,
+                "billing_ambiguous_results": 0,
+                "unavailable_cost_results": 5,
+            },
+            "recent_runs": [],
+        },
+        "/api/v1/capabilities": {
+            "demo_available": True,
+            "real_runs_enabled": False,
+        },
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes, []))
+    app = AppTest.from_file(str(APP_PATH), default_timeout=15)
+
+    app.run()
+
+    visible = [str(element.value) for element in [*app.text, *app.caption, *app.info]]
+    assert any("pricing is unavailable" in value.lower() for value in visible)
+    assert not any("$0.00" in value for value in visible)
 
 
 def test_run_page_submits_confirmed_demo_matrix(monkeypatch) -> None:
@@ -128,18 +183,21 @@ def test_run_page_submits_confirmed_demo_matrix(monkeypatch) -> None:
     )
     app = AppTest.from_string(RUN_PAGE_SOURCE, default_timeout=15)
     app.run()
+    run_name = {field.label: field for field in app.text_input}["Run name"]
+    run_name.set_value("Grounded support answers — July 18").run()
     assert not app.checkbox
     buttons = {button.label: button for button in app.button}
-    preflight = buttons["Validate server preflight"]
+    preflight = buttons["Check setup"]
     preflight.click().run()
     buttons = {button.label: button for button in app.button}
-    submit = buttons["Submit evaluation run"]
+    submit = buttons["Start evaluation"]
 
     submit.click().run()
 
     assert not app.exception
     assert submitted == [
         {
+            "name": "Grounded support answers — July 18",
             "dataset_id": "dataset-1",
             "prompt_ids": ["prompt-1"],
             "model_ids": ["model-1"],
@@ -212,6 +270,9 @@ def test_real_run_requires_separate_unknown_pricing_acknowledgment(monkeypatch) 
     app = AppTest.from_string(RUN_PAGE_SOURCE, default_timeout=15)
 
     app.run()
+    {field.label: field for field in app.text_input}["Run name"].set_value(
+        "Partner model pricing review"
+    ).run()
     checkboxes = {checkbox.label: checkbox for checkbox in app.checkbox}
     assert len(checkboxes) == 1
     real_cost_ack = checkboxes[
@@ -219,7 +280,7 @@ def test_real_run_requires_separate_unknown_pricing_acknowledgment(monkeypatch) 
     ]
     real_cost_ack.check().run()
     buttons = {button.label: button for button in app.button}
-    buttons["Validate server preflight"].click().run()
+    buttons["Check setup"].click().run()
 
     assert not app.exception
     checkboxes = {checkbox.label: checkbox for checkbox in app.checkbox}
@@ -227,7 +288,7 @@ def test_real_run_requires_separate_unknown_pricing_acknowledgment(monkeypatch) 
         "I understand some selected models have unknown pricing and actual charges may be higher."
     ]
     buttons = {button.label: button for button in app.button}
-    assert buttons["Submit evaluation run"].disabled is True
+    assert buttons["Start evaluation"].disabled is True
     metrics = {metric.label: metric.value for metric in app.metric}
     assert metrics["Padded UTF-8 input guard"] == "4,096"
     assert metrics["Partial known-cost estimate"] == "$0.0125"
@@ -236,11 +297,12 @@ def test_real_run_requires_separate_unknown_pricing_acknowledgment(monkeypatch) 
 
     unknown_cost_ack.check().run()
     buttons = {button.label: button for button in app.button}
-    assert buttons["Submit evaluation run"].disabled is False
-    buttons["Submit evaluation run"].click().run()
+    assert buttons["Start evaluation"].disabled is False
+    buttons["Start evaluation"].click().run()
 
     assert preflight_payloads == [
         {
+            "name": "Partner model pricing review",
             "dataset_id": "dataset-1",
             "prompt_ids": ["prompt-1"],
             "model_ids": ["model-real"],
@@ -287,18 +349,77 @@ def test_real_run_with_complete_pricing_needs_only_general_cost_ack(monkeypatch)
     app = AppTest.from_string(RUN_PAGE_SOURCE, default_timeout=15)
 
     app.run()
+    {field.label: field for field in app.text_input}["Run name"].set_value(
+        "Priced partner review"
+    ).run()
     app.checkbox[0].check().run()
     buttons = {button.label: button for button in app.button}
-    buttons["Validate server preflight"].click().run()
+    buttons["Check setup"].click().run()
 
     assert not app.exception
     assert [checkbox.label for checkbox in app.checkbox] == [
         "I understand this sends benchmark content to configured providers and may incur cost."
     ]
     buttons = {button.label: button for button in app.button}
-    assert buttons["Submit evaluation run"].disabled is False
+    assert buttons["Start evaluation"].disabled is False
     metrics = {metric.label: metric.value for metric in app.metric}
     assert metrics["Known-cost estimate"] == "$0.0250"
+
+
+def test_run_page_invalidates_preflight_when_name_changes(monkeypatch) -> None:
+    preflight_payloads: list[dict[str, Any]] = []
+    routes: dict[str, Any] = {
+        "/api/v1/datasets": {"items": [{"id": "dataset-1", "name": "Support QA"}]},
+        "/api/v1/datasets/dataset-1": {
+            "id": "dataset-1",
+            "name": "Support QA",
+            "cases": [{"id": "case-1", "external_id": "refund"}],
+        },
+        "/api/v1/prompts": {"items": [{"id": "prompt-1", "name": "Helpful"}]},
+        "/api/v1/models": {
+            "items": [
+                {
+                    "id": "model-1",
+                    "name": "Deterministic balanced",
+                    "provider": "deterministic",
+                    "api_mode": "deterministic",
+                }
+            ]
+        },
+        "/api/v1/capabilities": {
+            "demo_available": True,
+            "real_runs_enabled": False,
+            "limits": {"max_calls_per_run": 100},
+        },
+    }
+    monkeypatch.setattr(
+        ApiClient,
+        "_request_response",
+        _fake_transport(routes, [], preflight_payloads=preflight_payloads),
+    )
+    app = AppTest.from_string(RUN_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+    name_field = {field.label: field for field in app.text_input}["Run name"]
+    name_field.set_value("First review name").run()
+    {button.label: button for button in app.button}["Check setup"].click().run()
+    assert {button.label: button for button in app.button}["Start evaluation"].disabled is False
+
+    {field.label: field for field in app.text_input}["Run name"].set_value(
+        "Changed review name"
+    ).run()
+
+    assert {button.label: button for button in app.button}["Start evaluation"].disabled is True
+    assert preflight_payloads == [
+        {
+            "name": "First review name",
+            "dataset_id": "dataset-1",
+            "prompt_ids": ["prompt-1"],
+            "model_ids": ["model-1"],
+            "acknowledge_real_cost": False,
+            "acknowledge_unknown_cost": False,
+        }
+    ]
 
 
 def test_asset_page_uses_truthful_mutation_and_hash_copy(monkeypatch) -> None:

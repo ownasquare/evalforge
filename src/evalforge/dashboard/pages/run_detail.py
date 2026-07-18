@@ -7,8 +7,6 @@ from collections import defaultdict
 from typing import Any
 
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 from evalforge.dashboard.client import ApiError, collection_items, public_payload
@@ -34,7 +32,6 @@ from evalforge.dashboard.components import (
     resource_label,
     safe_json_panel,
     safe_text_panel,
-    style_figure,
 )
 from evalforge.dashboard.pages.common import (
     client,
@@ -48,9 +45,9 @@ from evalforge.dashboard.state import select_run, selected_run_id
 
 def render() -> None:
     page_header(
-        "Run detail & history",
-        "Trace every aggregate back to its case, output, metric evidence, and immutable snapshot.",
-        eyebrow="Evidence explorer",
+        "Runs",
+        "Inspect scores, outputs, and stored evidence for each evaluation.",
+        eyebrow="Run evidence",
     )
     api = client()
     runs_payload, runs_error = load_resource("run history", api.runs)
@@ -104,7 +101,7 @@ def render() -> None:
 
     _render_run_header(run, api)
     _render_analytics(run, results)
-    _render_results(results)
+    _render_results(results, candidate_labels=_candidate_labels(run))
 
 
 def _load_all_results(
@@ -154,16 +151,23 @@ def _render_run_header(run: dict[str, Any], api: Any) -> None:
     status = str(first_value(run, "status", "state", default="unknown"))
     top_left, top_right = st.columns([3, 1], vertical_alignment="center")
     with top_left:
-        st.subheader("Evaluation run")
-        st.text(name)
-        st.text(f"Run ID: {resource_id(run)}")
-        st.text(format_timestamp(first_value(run, "created_at", "started_at")))
+        st.subheader(name)
+        st.caption(format_timestamp(first_value(run, "created_at", "started_at")))
     with top_right:
         render_status_badge(status)
 
     completed = first_value(run, "completed_items", "completed_count", default=0)
     total = first_value(run, "total_items", "total_count", default=0)
     render_progress(completed, total, status=status)
+
+    with st.expander("Audit details", icon=":material/fingerprint:"):
+        st.caption("Run ID")
+        st.code(resource_id(run), language=None)
+        status_reason = first_value(run, "status_reason", "error_message")
+        if status_reason:
+            safe_text_panel("Status detail", status_reason)
+
+    _render_export_controls(resource_id(run), api)
 
     if not is_terminal_status(status):
         with st.expander("Run controls", icon=":material/tune:"):
@@ -185,6 +189,68 @@ def _render_run_header(run: dict[str, Any], api: Any) -> None:
                     st.success("Cancellation requested.")
                     api.clear_cache()
                     st.rerun()
+
+
+def _render_export_controls(run_id: str, api: Any) -> None:
+    if not run_id:
+        return
+    with st.expander("Export evidence", icon=":material/download:"):
+        st.caption("Download the immutable run record or a flat case-results table.")
+        json_column, csv_column = st.columns(2)
+        with json_column:
+            if st.button(
+                "Prepare JSON",
+                key=f"prepare-run-json-{run_id}",
+                width="stretch",
+            ):
+                _prepare_export(api, run_id, "json")
+            json_data = _prepared_export(run_id, "json")
+            if json_data is not None:
+                st.download_button(
+                    "Download JSON",
+                    data=json_data,
+                    file_name=f"evaluation-{run_id}.json",
+                    mime="application/json",
+                    key=f"download-run-json-{run_id}",
+                    width="stretch",
+                )
+        with csv_column:
+            if st.button(
+                "Prepare CSV",
+                key=f"prepare-run-csv-{run_id}",
+                width="stretch",
+            ):
+                _prepare_export(api, run_id, "csv")
+            csv_data = _prepared_export(run_id, "csv")
+            if csv_data is not None:
+                st.download_button(
+                    "Download CSV",
+                    data=csv_data,
+                    file_name=f"evaluation-{run_id}.csv",
+                    mime="text/csv",
+                    key=f"download-run-csv-{run_id}",
+                    width="stretch",
+                )
+
+
+def _prepare_export(api: Any, run_id: str, export_format: str) -> None:
+    try:
+        data = api.export_run(run_id, export_format=export_format)
+    except ApiError as error:
+        render_api_error(error, title=f"The {export_format.upper()} export could not be prepared")
+        return
+    st.session_state[f"_evalforge_run_export_{export_format}"] = {
+        "run_id": run_id,
+        "data": data,
+    }
+
+
+def _prepared_export(run_id: str, export_format: str) -> bytes | None:
+    value = st.session_state.get(f"_evalforge_run_export_{export_format}")
+    if not isinstance(value, dict) or value.get("run_id") != run_id:
+        return None
+    data = value.get("data")
+    return data if isinstance(data, bytes) else None
 
 
 def _render_analytics(run: dict[str, Any], results: list[dict[str, Any]]) -> None:
@@ -234,52 +300,26 @@ def _render_analytics(run: dict[str, Any], results: list[dict[str, Any]]) -> Non
         ]
     )
 
-    metric_means = _metric_means(summary, results)
-    if not metric_means:
+    metric_rows = _metric_scorecard_rows(run, summary, results)
+    if not metric_rows:
         render_empty_state(
             "No applicable metric aggregates",
-            "Metric charts appear after applicable results are recorded.",
+            "The scorecard appears after applicable results are recorded.",
         )
         return
-    names = list(metric_means)
-    scores = [metric_means[name] for name in names]
-    frame = pd.DataFrame({"Metric": names, "Score": scores})
-    left, right = st.columns(2)
-    with left:
-        st.subheader("Metric means")
-        figure = px.bar(
-            frame,
-            x="Score",
-            y="Metric",
-            orientation="h",
-            range_x=[0, 1],
-            color="Score",
-            color_continuous_scale=["#EF6A67", "#E8A317", "#16B8C8", "#6558F5"],
-        )
-        figure.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(style_figure(figure), width="stretch", config={"displayModeBar": False})
-    with right:
-        st.subheader("Quality profile")
-        radar = go.Figure(
-            data=[
-                go.Scatterpolar(
-                    r=[*scores, scores[0]],
-                    theta=[*names, names[0]],
-                    fill="toself",
-                    fillcolor="rgba(101, 88, 245, 0.18)",
-                    line={"color": "#6558F5", "width": 3},
-                    name="Mean score",
-                )
-            ]
-        )
-        radar.update_layout(
-            polar={"radialaxis": {"visible": True, "range": [0, 1]}},
-            showlegend=False,
-        )
-        st.plotly_chart(style_figure(radar), width="stretch", config={"displayModeBar": False})
+    st.subheader("Metric scorecard")
+    st.caption(
+        "Scores stay on their stored scale. Read each row's direction and target before "
+        "interpreting whether a higher or lower value is better."
+    )
+    st.dataframe(pd.DataFrame(metric_rows), hide_index=True, width="stretch")
 
 
-def _render_results(results: list[dict[str, Any]]) -> None:
+def _render_results(
+    results: list[dict[str, Any]],
+    *,
+    candidate_labels: dict[str, str] | None = None,
+) -> None:
     st.subheader("Case-level evidence")
     if not results:
         render_empty_state(
@@ -288,7 +328,8 @@ def _render_results(results: list[dict[str, Any]]) -> None:
         )
         return
 
-    candidate_options = _candidate_options(results)
+    immutable_labels = candidate_labels or {}
+    candidate_options = _candidate_options(results, immutable_labels)
     selected_candidate = st.selectbox(
         "Candidate filter",
         options=["all", *candidate_options],
@@ -304,20 +345,29 @@ def _render_results(results: list[dict[str, Any]]) -> None:
 
     for index, result in enumerate(filtered[:50], start=1):
         status = str(first_value(result, "status", "state", default="completed"))
+        case_identity = _case_identity(result, fallback=f"Case {index}")
         with st.expander(
-            f"Result {index} · {status.replace('_', ' ').title()}",
+            f"{case_identity} · {status.replace('_', ' ').title()}",
             icon=":material/article:",
         ):
-            _render_result(result)
+            _render_result(
+                result,
+                candidate_label=immutable_labels.get(_candidate_id(result)),
+            )
 
 
-def _render_result(result: dict[str, Any]) -> None:
+def _render_result(result: dict[str, Any], *, candidate_label: str | None = None) -> None:
     input_snapshot = result.get("input_snapshot")
     snapshot = input_snapshot if isinstance(input_snapshot, dict) else {}
     identity, score_column, latency_column = st.columns([3, 1, 1])
     with identity:
-        st.text(resource_label(snapshot or result, fallback="Test case result"))
-        candidate = first_value(result, "candidate_name", "model_name", "prompt_name")
+        st.text(_case_identity(result, fallback="Test case result"))
+        candidate = candidate_label or first_value(
+            result,
+            "candidate_name",
+            "model_name",
+            "prompt_name",
+        )
         if candidate:
             st.text(f"Candidate: {candidate}")
     with score_column:
@@ -340,12 +390,12 @@ def _render_result(result: dict[str, Any]) -> None:
         "source_context",
         default=first_value(snapshot, "context_text", "context"),
     )
-    text_columns = st.columns(3)
-    with text_columns[0]:
+    output_tab, reference_tab, context_tab = st.tabs(["Output", "Reference", "Context"])
+    with output_tab:
         safe_text_panel("Model output", output)
-    with text_columns[1]:
+    with reference_tab:
         safe_text_panel("Reference", reference)
-    with text_columns[2]:
+    with context_tab:
         safe_text_panel("Source context", context)
 
     metrics = normalized_metric_rows(
@@ -355,11 +405,21 @@ def _render_result(result: dict[str, Any]) -> None:
         display_rows: list[dict[str, Any]] = []
         for metric in metrics:
             passed = first_value(metric, "passed")
+            applicability = str(
+                first_value(metric, "applicability", "status", default="applicable")
+            )
             display_rows.append(
                 {
-                    "Metric": first_value(metric, "name", "metric", default="Metric"),
+                    "Metric": _metric_label(
+                        str(first_value(metric, "name", "metric", default="Metric"))
+                    ),
                     "Score": format_score(first_value(metric, "score", "value")),
-                    "Status": first_value(metric, "applicability", "status", default="applicable"),
+                    "Direction": _direction_label(first_value(metric, "direction")),
+                    "Target": _target_label(
+                        first_value(metric, "direction"),
+                        first_value(metric, "threshold"),
+                    ),
+                    "Status": _applicability_label(applicability),
                     "Passed": _passed_label(passed),
                     "Reason": first_value(metric, "reason", "explanation", default=""),
                 }
@@ -405,21 +465,54 @@ def _render_result(result: dict[str, Any]) -> None:
         safe_json_panel("Stored snapshot", public_payload(provenance))
 
 
-def _candidate_options(results: list[dict[str, Any]]) -> dict[str, str]:
+def _candidate_labels(run: dict[str, Any]) -> dict[str, str]:
+    value = run.get("candidates")
+    candidates = (
+        [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+    )
+    labels: dict[str, str] = {}
+    for candidate in candidates:
+        candidate_id = first_value(candidate, "id", "candidate_id", "run_candidate_id")
+        label = first_value(candidate, "label", "name", "title")
+        if candidate_id is not None and label is not None:
+            labels[str(candidate_id)] = str(label)
+    return labels
+
+
+def _candidate_options(
+    results: list[dict[str, Any]],
+    candidate_labels: dict[str, str] | None = None,
+) -> dict[str, str]:
+    immutable_labels = candidate_labels or {}
     options: dict[str, str] = {}
     for result in results:
         candidate_id = _candidate_id(result)
         if not candidate_id:
             continue
-        label = first_value(
-            result,
-            "candidate_name",
-            "model_name",
-            "prompt_name",
-            default=f"Candidate {candidate_id[:8]}",
+        label = immutable_labels.get(candidate_id) or str(
+            first_value(
+                result,
+                "candidate_name",
+                "model_name",
+                "prompt_name",
+                default=f"Candidate {candidate_id[:8]}",
+            )
         )
         options[candidate_id] = str(label)
     return options
+
+
+def _case_identity(result: dict[str, Any], *, fallback: str) -> str:
+    input_snapshot = result.get("input_snapshot")
+    snapshot = input_snapshot if isinstance(input_snapshot, dict) else {}
+    value = first_value(snapshot, "external_id", "name", "title", "label")
+    if value is None:
+        value = first_value(result, "case_name", "external_id", "test_case_id")
+    if value is None:
+        case_hash = result.get("case_hash")
+        if isinstance(case_hash, str) and case_hash:
+            value = f"Case {case_hash[:8]}"
+    return str(value) if value is not None else fallback
 
 
 def _passed_label(value: Any) -> str:
@@ -435,6 +528,138 @@ def _candidate_id(result: dict[str, Any]) -> str:
     return str(value) if value is not None else ""
 
 
+def _metric_scorecard_rows(
+    run: dict[str, Any],
+    summary: dict[str, Any],
+    results: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    means = {
+        name: score
+        for name, score in _metric_means(summary, results).items()
+        if name != "aggregate_quality"
+    }
+    if not means:
+        return []
+
+    metadata = _metric_metadata(run, results)
+    configured_order = [name for name in metadata if name in means]
+    metric_names = [*configured_order, *sorted(set(means) - set(configured_order))]
+    applicable_counts = _metric_applicable_counts(results)
+    denominator = len(results)
+    rows: list[dict[str, str]] = []
+    for name in metric_names:
+        metric_metadata = metadata.get(name, {})
+        direction = metric_metadata.get("direction")
+        threshold = metric_metadata.get("threshold")
+        rows.append(
+            {
+                "Metric": _metric_label(name),
+                "Mean score": format_score(means[name]),
+                "Direction": _direction_label(direction),
+                "Target": _target_label(direction, threshold),
+                "Applicable results": (
+                    f"{applicable_counts.get(name, 0):,} / {denominator:,}" if denominator else "—"
+                ),
+            }
+        )
+    return rows
+
+
+def _metric_metadata(
+    run: dict[str, Any],
+    results: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    metadata: dict[str, dict[str, Any]] = {}
+    snapshot = run.get("metric_configuration_snapshot")
+    if isinstance(snapshot, dict):
+        configured = snapshot.get("metrics")
+        if isinstance(configured, list):
+            for item in configured:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                if isinstance(name, str) and name != "aggregate_quality":
+                    metadata[name] = {
+                        "direction": item.get("direction"),
+                        "threshold": item.get("threshold"),
+                    }
+        directions = snapshot.get("directions")
+        if isinstance(directions, dict):
+            for name, direction in directions.items():
+                if str(name) == "aggregate_quality":
+                    continue
+                metadata.setdefault(str(name), {})["direction"] = direction
+
+    for result in results:
+        metrics = normalized_metric_rows(
+            first_value(result, "metric_results", "metrics", "scores", default=[])
+        )
+        for metric in metrics:
+            name = str(first_value(metric, "name", "metric", default=""))
+            if not name or name == "aggregate_quality":
+                continue
+            target = metadata.setdefault(name, {})
+            if target.get("direction") is None and metric.get("direction") is not None:
+                target["direction"] = metric["direction"]
+            if target.get("threshold") is None and metric.get("threshold") is not None:
+                target["threshold"] = metric["threshold"]
+    return metadata
+
+
+def _metric_applicable_counts(results: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for result in results:
+        metrics = normalized_metric_rows(
+            first_value(result, "metric_results", "metrics", "scores", default=[])
+        )
+        for metric in metrics:
+            name = str(first_value(metric, "name", "metric", default=""))
+            applicability = str(
+                first_value(metric, "applicability", "status", default="applicable")
+            ).lower()
+            score = first_value(metric, "score", "value")
+            if (
+                name
+                and name != "aggregate_quality"
+                and applicability != "not_applicable"
+                and isinstance(score, (int, float))
+                and not isinstance(score, bool)
+            ):
+                counts[name] += 1
+    return dict(counts)
+
+
+def _metric_label(name: str) -> str:
+    return name.replace("_", " ").strip().capitalize() or "Metric"
+
+
+def _direction_label(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "higher_is_better":
+        return "Higher is better"
+    if normalized == "lower_is_better":
+        return "Lower is better"
+    return "Direction unavailable"
+
+
+def _target_label(direction: Any, threshold: Any) -> str:
+    rendered_threshold = format_score(threshold)
+    if rendered_threshold == "—":
+        return "Not configured"
+    normalized = str(direction or "").strip().lower()
+    if normalized == "higher_is_better":
+        return f"at least {rendered_threshold}"
+    if normalized == "lower_is_better":
+        return f"at most {rendered_threshold}"
+    return rendered_threshold
+
+
+def _applicability_label(value: str) -> str:
+    if value.strip().lower() == "not_applicable":
+        return "Not scored"
+    return value.replace("_", " ").strip().title()
+
+
 def _metric_means(
     summary: dict[str, Any],
     results: list[dict[str, Any]],
@@ -443,7 +668,7 @@ def _metric_means(
     if isinstance(stored, dict):
         means: dict[str, float] = {}
         for name, value in stored.items():
-            score = value.get("score") if isinstance(value, dict) else value
+            score = first_value(value, "score", "mean") if isinstance(value, dict) else value
             if isinstance(score, (int, float)) and not isinstance(score, bool):
                 means[str(name)] = float(score)
         if means:
@@ -455,11 +680,12 @@ def _metric_means(
             first_value(result, "metric_results", "metrics", "scores", default=[])
         )
         for metric in metrics:
+            name = str(first_value(metric, "name", "metric", default="Metric"))
+            if name == "aggregate_quality":
+                continue
             score = first_value(metric, "score", "value")
             if isinstance(score, (int, float)) and not isinstance(score, bool):
-                values[str(first_value(metric, "name", "metric", default="Metric"))].append(
-                    float(score)
-                )
+                values[name].append(float(score))
     return {name: sum(scores) / len(scores) for name, scores in values.items() if scores}
 
 

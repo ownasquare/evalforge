@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pandas as pd
@@ -10,7 +11,7 @@ import streamlit as st
 
 from evalforge.dashboard.client import collection_items
 from evalforge.dashboard.components import (
-    MetricCard,
+    CHART_SEQUENTIAL_SCALE,
     first_value,
     format_currency,
     format_duration_ms,
@@ -19,7 +20,6 @@ from evalforge.dashboard.components import (
     page_header,
     render_api_error,
     render_empty_state,
-    render_metric_cards,
     resource_id,
     resource_label,
     style_figure,
@@ -30,9 +30,9 @@ from evalforge.dashboard.state import select_run, selected_run_id
 
 def render() -> None:
     page_header(
-        "Compare candidates",
-        "Use paired case deltas—not unrelated averages—to see which candidate actually wins.",
-        eyebrow="Decision workspace",
+        "Compare",
+        "Compare each challenger with the baseline on the same test cases.",
+        eyebrow="Shared-case evidence",
     )
     api = client()
     runs_payload, runs_error = load_resource("completed runs", api.runs)
@@ -84,35 +84,47 @@ def render() -> None:
         )
         return
 
-    _render_decision_summary(comparison)
+    candidate_labels = _candidate_label_map(candidates)
+    _render_pairwise_summary(comparison, candidate_labels)
     _render_candidate_chart(candidates)
-    _render_win_tie_loss(comparison)
-    _render_paired_deltas(comparison)
+    _render_case_evidence(comparison, candidate_labels)
     _render_candidate_table(candidates)
 
 
-def _render_decision_summary(comparison: dict[str, Any]) -> None:
-    winner = first_value(comparison, "winner_name", "recommended_candidate", "winner")
-    confidence = first_value(comparison, "confidence", "winner_confidence")
-    paired_cases = first_value(comparison, "paired_case_count", "comparable_cases", "case_count")
-    tie_rate = first_value(comparison, "tie_rate")
-    paired = _comparison_items(comparison, "paired_comparisons")
-    if paired_cases is None and paired:
-        paired_cases = sum(int(item.get("paired_cases", 0)) for item in paired)
-    if tie_rate is None and paired:
-        ties = sum(int(item.get("ties", 0)) for item in paired)
-        total = sum(int(item.get("paired_cases", 0)) for item in paired)
-        tie_rate = ties / total if total else None
-    cards = [
-        MetricCard("Paired cases", str(paired_cases) if paired_cases is not None else "—"),
-        MetricCard("Tie rate", f"{float(tie_rate) * 100:.1f}%" if _number(tie_rate) else "—"),
-        MetricCard("Confidence", format_score(confidence)),
-    ]
-    render_metric_cards(cards, max_columns=3)
-    if winner:
-        st.success("Leading candidate")
-        st.text(str(winner))
-        st.caption("Treat this as evaluation evidence, not an automatic production promotion.")
+def _render_pairwise_summary(
+    comparison: dict[str, Any],
+    candidate_labels: dict[str, str],
+) -> None:
+    st.subheader("Pairwise summary")
+    st.caption(
+        "Each row compares a challenger with the stored baseline over the same cases. "
+        "These benchmark aggregates do not select or automatically promote a production "
+        "candidate."
+    )
+    rows = _pairwise_summary_rows(comparison, candidate_labels)
+    if not rows:
+        render_empty_state(
+            "No pairwise summary",
+            "The API did not return a shared-case aggregate for these candidates.",
+        )
+        return
+    for row in rows:
+        with st.container(border=True):
+            st.caption(f"Baseline · {row['Baseline']}")
+            st.markdown(f"**Challenger · {row['Challenger']}**")
+            paired_cases, quality_delta = st.columns(2)
+            with paired_cases:
+                st.caption("Shared cases")
+                st.text(row["Paired cases"])
+            with quality_delta:
+                st.caption("Mean quality change")
+                st.text(row["Mean quality delta"])
+            st.caption("Case outcomes")
+            st.write(
+                f"Wins {row['Challenger wins']} · "
+                f"Ties {row['Ties']} · "
+                f"Regressions {row['Challenger regressions']}"
+            )
 
 
 def _render_candidate_chart(candidates: list[dict[str, Any]]) -> None:
@@ -141,112 +153,26 @@ def _render_candidate_chart(candidates: list[dict[str, Any]]) -> None:
         y="Quality",
         color="Quality",
         range_y=[0, 1],
-        color_continuous_scale=["#EF6A67", "#E8A317", "#16B8C8", "#6558F5"],
+        color_continuous_scale=list(CHART_SEQUENTIAL_SCALE),
     )
     figure.update_layout(coloraxis_showscale=False)
     st.plotly_chart(style_figure(figure), width="stretch", config={"displayModeBar": False})
 
 
-def _render_win_tie_loss(comparison: dict[str, Any]) -> None:
-    payload = first_value(
-        comparison,
-        "win_tie_loss",
-        "outcomes",
-        "pairwise_outcomes",
-        "paired_comparisons",
-    )
-    rows: list[dict[str, Any]] = []
-    if isinstance(payload, dict):
-        if all(isinstance(value, (int, float)) for value in payload.values()):
-            rows = [{"Outcome": str(key).title(), "Count": value} for key, value in payload.items()]
-        else:
-            rows = collection_items(payload)
-    elif isinstance(payload, list):
-        raw_rows = [row for row in payload if isinstance(row, dict)]
-        has_outcomes = all(
-            any(key in row for key in ("wins", "ties", "losses")) for row in raw_rows
-        )
-        if raw_rows and has_outcomes:
-            rows = [
-                {"Outcome": "Win", "Count": sum(int(row.get("wins", 0)) for row in raw_rows)},
-                {"Outcome": "Tie", "Count": sum(int(row.get("ties", 0)) for row in raw_rows)},
-                {"Outcome": "Loss", "Count": sum(int(row.get("losses", 0)) for row in raw_rows)},
-            ]
-        else:
-            rows = raw_rows
-    if not rows:
-        return
-    st.subheader("Win / tie / loss")
-    frame = pd.DataFrame(rows)
-    outcome_column = next(
-        (name for name in ("Outcome", "outcome", "name", "category") if name in frame.columns),
-        None,
-    )
-    count_column = next(
-        (name for name in ("Count", "count", "value", "total") if name in frame.columns),
-        None,
-    )
-    if outcome_column and count_column:
-        figure = px.bar(
-            frame,
-            x=outcome_column,
-            y=count_column,
-            color=outcome_column,
-            color_discrete_map={
-                "Win": "#1E9E72",
-                "Tie": "#E8A317",
-                "Loss": "#EF6A67",
-                "win": "#1E9E72",
-                "tie": "#E8A317",
-                "loss": "#EF6A67",
-            },
-        )
-        figure.update_layout(showlegend=False)
-        st.plotly_chart(
-            style_figure(figure, height=300),
-            width="stretch",
-            config={"displayModeBar": False},
-        )
-
-
-def _render_paired_deltas(comparison: dict[str, Any]) -> None:
-    rows = _comparison_items(
-        comparison,
-        "paired_deltas",
-        "case_deltas",
-        "pairs",
-        "paired_comparisons",
-    )
-    st.subheader("Paired case deltas")
+def _render_case_evidence(
+    comparison: dict[str, Any],
+    candidate_labels: dict[str, str],
+) -> None:
+    rows = _case_evidence_rows(comparison, candidate_labels)
+    st.subheader("Case evidence")
     if not rows:
         render_empty_state(
-            "No paired deltas",
-            "The API did not return case-aligned delta evidence for this run.",
+            "No case-level comparison evidence",
+            "The API returned pairwise aggregates without individual shared-case deltas.",
         )
         return
-    frame = pd.DataFrame(rows)
-    preferred = [
-        column
-        for column in (
-            "case_name",
-            "case_id",
-            "candidate_a",
-            "candidate_b",
-            "score_a",
-            "score_b",
-            "delta",
-            "winner",
-            "baseline_candidate_id",
-            "challenger_candidate_id",
-            "paired_cases",
-            "mean_delta",
-            "wins",
-            "ties",
-            "losses",
-        )
-        if column in frame.columns
-    ]
-    st.dataframe(frame[preferred] if preferred else frame, hide_index=True, width="stretch")
+    st.caption("Regressions are listed first, followed by improvements and ties.")
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 def _render_candidate_table(candidates: list[dict[str, Any]]) -> None:
@@ -278,6 +204,195 @@ def _render_candidate_table(candidates: list[dict[str, Any]]) -> None:
             }
         )
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
+def _candidate_label_map(candidates: Any) -> dict[str, str]:
+    if not isinstance(candidates, list):
+        return {}
+    labels: dict[str, str] = {}
+    for index, candidate in enumerate(candidates, start=1):
+        if not isinstance(candidate, dict):
+            continue
+        candidate_id = first_value(candidate, "candidate_id", "id", "run_candidate_id")
+        if candidate_id is None:
+            continue
+        labels[str(candidate_id)] = resource_label(
+            candidate,
+            fallback=f"Candidate {index}",
+        )
+    return labels
+
+
+def _pairwise_summary_rows(
+    comparison: dict[str, Any],
+    candidate_labels: dict[str, str],
+) -> list[dict[str, str]]:
+    pairs = _comparison_items(comparison, "paired_comparisons")
+    default_baseline = first_value(comparison, "baseline_candidate_id")
+    rows: list[dict[str, str]] = []
+    for pair in pairs:
+        baseline_id = first_value(
+            pair,
+            "baseline_candidate_id",
+            default=default_baseline,
+        )
+        challenger_id = first_value(pair, "challenger_candidate_id")
+        paired_cases = _count(first_value(pair, "paired_cases"))
+        rows.append(
+            {
+                "Baseline": str(
+                    first_value(
+                        pair,
+                        "baseline_label",
+                        default=_candidate_label(baseline_id, candidate_labels),
+                    )
+                ),
+                "Challenger": str(
+                    first_value(
+                        pair,
+                        "challenger_label",
+                        default=_candidate_label(challenger_id, candidate_labels),
+                    )
+                ),
+                "Paired cases": f"{paired_cases:,}" if paired_cases is not None else "—",
+                "Mean quality delta": _format_delta(first_value(pair, "mean_delta", "delta")),
+                "Challenger wins": _fraction_label(pair.get("wins"), paired_cases),
+                "Ties": _fraction_label(pair.get("ties"), paired_cases),
+                "Challenger regressions": _fraction_label(pair.get("losses"), paired_cases),
+            }
+        )
+    return rows
+
+
+def _case_evidence_rows(
+    comparison: dict[str, Any],
+    candidate_labels: dict[str, str],
+) -> list[dict[str, str]]:
+    deltas = _comparison_items(
+        comparison,
+        "paired_case_deltas",
+        "case_deltas",
+        "pairs",
+    )
+    if not deltas:
+        return []
+    default_baseline = first_value(comparison, "baseline_candidate_id")
+    ordered = sorted(
+        enumerate(deltas),
+        key=lambda indexed: (0 if _case_outcome(indexed[1]) == "Regression" else 1, indexed[0]),
+    )
+    rows: list[dict[str, str]] = []
+    for position, (_, item) in enumerate(ordered, start=1):
+        baseline_id = first_value(
+            item,
+            "baseline_candidate_id",
+            "candidate_a_id",
+            "candidate_a",
+            default=default_baseline,
+        )
+        challenger_id = first_value(
+            item,
+            "challenger_candidate_id",
+            "candidate_b_id",
+            "candidate_b",
+        )
+        case_identity = first_value(
+            item,
+            "case_name",
+            "case_label",
+            "external_id",
+            "case_external_id",
+            "case_id",
+            "test_case_id",
+            default=f"Case {position}",
+        )
+        rows.append(
+            {
+                "Case": str(case_identity),
+                "Baseline": str(
+                    first_value(
+                        item,
+                        "baseline_label",
+                        default=_candidate_label(baseline_id, candidate_labels),
+                    )
+                ),
+                "Challenger": str(
+                    first_value(
+                        item,
+                        "challenger_label",
+                        default=_candidate_label(challenger_id, candidate_labels),
+                    )
+                ),
+                "Baseline score": format_score(first_value(item, "baseline_score", "score_a")),
+                "Challenger score": format_score(first_value(item, "challenger_score", "score_b")),
+                "Delta": _format_delta(
+                    first_value(item, "delta", "score_delta", "quality_delta", "mean_delta")
+                ),
+                "Outcome": _case_outcome(item),
+            }
+        )
+    return rows
+
+
+def _candidate_label(value: Any, candidate_labels: dict[str, str]) -> str:
+    if value is None:
+        return "Candidate unavailable"
+    candidate_id = str(value)
+    return candidate_labels.get(candidate_id, candidate_id)
+
+
+def _case_outcome(item: dict[str, Any]) -> str:
+    explicit = str(first_value(item, "outcome", "result", default="")).strip().lower()
+    if explicit in {"regression", "loss", "worse"}:
+        return "Regression"
+    if explicit in {"improvement", "win", "better"}:
+        return "Improvement"
+    if explicit in {"tie", "unchanged", "equal"}:
+        return "Tie"
+    if item.get("regression") is True:
+        return "Regression"
+    delta = _finite_number(first_value(item, "delta", "score_delta", "quality_delta", "mean_delta"))
+    if delta is not None:
+        if delta < 0:
+            return "Regression"
+        if delta > 0:
+            return "Improvement"
+        return "Tie"
+    winner = first_value(item, "winner", "winner_candidate_id")
+    baseline_id = first_value(item, "baseline_candidate_id", "candidate_a_id")
+    challenger_id = first_value(item, "challenger_candidate_id", "candidate_b_id")
+    if winner is not None and baseline_id is not None and str(winner) == str(baseline_id):
+        return "Regression"
+    if winner is not None and challenger_id is not None and str(winner) == str(challenger_id):
+        return "Improvement"
+    return "Not classified"
+
+
+def _fraction_label(value: Any, denominator: int | None) -> str:
+    numerator = _count(value)
+    if numerator is None or denominator is None:
+        return "—"
+    if denominator <= 0:
+        return f"{numerator:,} / {denominator:,}"
+    return f"{numerator:,} / {denominator:,} ({numerator / denominator * 100:.1f}%)"
+
+
+def _format_delta(value: Any) -> str:
+    number = _finite_number(value)
+    if number is None:
+        return "—"
+    return f"{number:+.3f}"
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _comparison_items(comparison: dict[str, Any], *keys: str) -> list[dict[str, Any]]:

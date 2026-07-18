@@ -22,10 +22,9 @@ from evalforge.dashboard.state import configured_api_url, reconnect_client
 
 def render() -> None:
     page_header(
-        "Settings & readiness",
-        "Inspect the safe public execution contract. Credentials and database access never "
-        "enter Streamlit.",
-        eyebrow="Operations",
+        "Settings",
+        "Review connection health, execution limits, and the published scoring contract.",
+        eyebrow="System",
     )
     api = client()
     live, live_error = load_resource("liveness", api.health_live)

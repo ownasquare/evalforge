@@ -62,8 +62,9 @@ Start the dashboard in another terminal:
 uv run streamlit run src/evalforge/dashboard/app.py --server.address 127.0.0.1 --server.port 8501
 ```
 
-Open `http://127.0.0.1:8501`, choose **Run Evaluation**, and compare the seeded prompt and demo
-model profiles. API documentation is available at `http://127.0.0.1:8000/docs` in development.
+Open `http://127.0.0.1:8501`, choose **New evaluation**, name the run, and compare the seeded prompt
+and demo model profiles. The first prompt/model pair is shown as the shared-case comparison
+baseline. API documentation is available at `http://127.0.0.1:8000/docs` in development.
 
 ## Truthful score semantics
 

@@ -57,11 +57,16 @@ def build_overview(session: Session) -> dict[str, Any]:
             EvaluationResult.aggregate_score.is_not(None)
         )
     )
-    known_cost = (
+    known_cost = session.scalar(
+        select(func.sum(EvaluationResult.estimated_cost_micro_usd)).where(
+            EvaluationResult.estimated_cost_micro_usd.is_not(None)
+        )
+    )
+    known_cost_items = (
         session.scalar(
-            select(func.sum(EvaluationResult.estimated_cost_micro_usd)).where(
-                EvaluationResult.estimated_cost_micro_usd.is_not(None)
-            )
+            select(func.count())
+            .select_from(EvaluationResult)
+            .where(EvaluationResult.estimated_cost_micro_usd.is_not(None))
         )
         or 0
     )
@@ -95,7 +100,8 @@ def build_overview(session: Session) -> dict[str, Any]:
                 round(successful_results / evaluated_results, 4) if evaluated_results else None
             ),
             "mean_quality": round(float(mean_quality), 4) if mean_quality is not None else None,
-            "known_cost_micro_usd": int(known_cost),
+            "known_cost_micro_usd": int(known_cost) if known_cost is not None else None,
+            "known_cost_items": known_cost_items,
             "billing_ambiguous_results": ambiguous_cost_results,
             "unavailable_cost_results": unavailable_cost_results,
         },
@@ -198,12 +204,15 @@ def build_run_comparison(session: Session, run_id: str) -> dict[str, Any]:
         )
 
     paired = _paired_deltas(candidates, results_by_candidate)
+    paired_case_deltas = _paired_case_deltas(candidates, results_by_candidate)
     return {
         "run_id": run.id,
         "status": run.status.value,
         "baseline_candidate_id": candidates[0].id if candidates else None,
+        "baseline_candidate_label": candidates[0].label if candidates else None,
         "candidates": summaries,
         "paired_comparisons": paired,
+        "paired_case_deltas": paired_case_deltas,
         "quality_note": (
             "Mean quality uses only applicable, explicitly weighted quality metrics. "
             "Operational latency, reported token usage, and known cost include every "
@@ -219,18 +228,10 @@ def _paired_deltas(
     if len(candidates) < 2:
         return []
     baseline = candidates[0]
-    baseline_by_case = {
-        result.test_case_id: result
-        for result in results_by_candidate[baseline.id]
-        if result.status is ResultStatus.COMPLETED and result.aggregate_score is not None
-    }
+    baseline_by_case = _scored_results_by_case(results_by_candidate[baseline.id])
     comparisons: list[dict[str, Any]] = []
     for challenger in candidates[1:]:
-        challenger_by_case = {
-            result.test_case_id: result
-            for result in results_by_candidate[challenger.id]
-            if result.status is ResultStatus.COMPLETED and result.aggregate_score is not None
-        }
+        challenger_by_case = _scored_results_by_case(results_by_candidate[challenger.id])
         shared = sorted(set(baseline_by_case) & set(challenger_by_case))
         deltas: list[float] = []
         for case_id in shared:
@@ -242,7 +243,9 @@ def _paired_deltas(
         comparisons.append(
             {
                 "baseline_candidate_id": baseline.id,
+                "baseline_label": baseline.label,
                 "challenger_candidate_id": challenger.id,
+                "challenger_label": challenger.label,
                 "paired_cases": len(deltas),
                 "mean_delta": round(mean(deltas), 4) if deltas else None,
                 "wins": sum(delta > epsilon for delta in deltas),
@@ -251,3 +254,57 @@ def _paired_deltas(
             }
         )
     return comparisons
+
+
+def _paired_case_deltas(
+    candidates: list[RunCandidate],
+    results_by_candidate: dict[str, list[EvaluationResult]],
+) -> list[dict[str, Any]]:
+    """Return one bounded evidence row per shared scored case and challenger."""
+
+    if len(candidates) < 2:
+        return []
+    baseline = candidates[0]
+    baseline_by_case = _scored_results_by_case(results_by_candidate[baseline.id])
+    rows: list[dict[str, Any]] = []
+    epsilon = 1e-9
+    for challenger in candidates[1:]:
+        challenger_by_case = _scored_results_by_case(results_by_candidate[challenger.id])
+        for case_id in sorted(set(baseline_by_case) & set(challenger_by_case)):
+            baseline_result = baseline_by_case[case_id]
+            challenger_result = challenger_by_case[case_id]
+            baseline_score = float(baseline_result.aggregate_score)  # type: ignore[arg-type]
+            challenger_score = float(challenger_result.aggregate_score)  # type: ignore[arg-type]
+            delta = challenger_score - baseline_score
+            if delta > epsilon:
+                outcome = "win"
+            elif delta < -epsilon:
+                outcome = "loss"
+            else:
+                outcome = "tie"
+            external_id = baseline_result.input_snapshot.get("external_id")
+            rows.append(
+                {
+                    "baseline_candidate_id": baseline.id,
+                    "baseline_label": baseline.label,
+                    "challenger_candidate_id": challenger.id,
+                    "challenger_label": challenger.label,
+                    "test_case_id": case_id,
+                    "case_external_id": str(external_id) if external_id is not None else None,
+                    "baseline_score": round(baseline_score, 4),
+                    "challenger_score": round(challenger_score, 4),
+                    "delta": round(delta, 4),
+                    "outcome": outcome,
+                }
+            )
+    return rows
+
+
+def _scored_results_by_case(
+    results: list[EvaluationResult],
+) -> dict[str, EvaluationResult]:
+    return {
+        result.test_case_id: result
+        for result in results
+        if result.status is ResultStatus.COMPLETED and result.aggregate_score is not None
+    }

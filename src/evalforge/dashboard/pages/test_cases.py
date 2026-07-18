@@ -27,9 +27,9 @@ _MAX_IMPORT_BYTES = 2 * 1024 * 1024
 
 def render() -> None:
     page_header(
-        "Test cases & prompt library",
-        "Curate benchmark inputs and auditable prompt templates before running models.",
-        eyebrow="Evaluation assets",
+        "Benchmarks",
+        "Manage datasets, expected answers, scoring criteria, and prompt versions.",
+        eyebrow="Benchmark library",
     )
     api = client()
     datasets_payload, dataset_error = load_resource("datasets", api.datasets)

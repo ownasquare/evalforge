@@ -11,7 +11,7 @@ The development OpenAPI document is available at `/openapi.json` and the interac
 | `GET` | `/health/ready` | Database, migration, and local-worker readiness. |
 | `GET` | `/api/v1/meta` | Stable non-secret build, database, adapter, and executor metadata. |
 | `GET` | `/api/v1/capabilities` | Safe provider availability, limits, metric versions, and execution mode. |
-| `GET` | `/api/v1/overview` | Dashboard totals, trend, leaderboard, and recent activity. |
+| `GET` | `/api/v1/overview` | Workspace totals, pricing-evidence coverage, and recent runs. |
 
 Capabilities expose booleans and allowlisted model identifiers, never secret values.
 Metadata lists the always-available deterministic adapter plus only those real-provider adapters
@@ -54,7 +54,7 @@ provider base URL or API key.
 | `GET` | `/api/v1/runs/{run_id}` | Read status, progress, candidate identity, and summary. |
 | `POST` | `/api/v1/runs/{run_id}/cancel` | Request cancellation without deleting completed evidence. |
 | `GET` | `/api/v1/runs/{run_id}/results` | Page case-level output and metric evidence. |
-| `GET` | `/api/v1/runs/{run_id}/comparison` | Paired variant deltas, wins/ties/losses, latency, usage, and cost. |
+| `GET` | `/api/v1/runs/{run_id}/comparison` | Baseline/challenger summaries plus bounded shared-case deltas, wins/ties/losses, latency, usage, and cost. |
 | `GET` | `/api/v1/runs/{run_id}/export` | Export the complete immutable result package. |
 
 `POST /runs` returns `202 Accepted` and a `Location` header. Two prompts, two models, and five cases

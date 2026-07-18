@@ -25,14 +25,14 @@ from evalforge.dashboard.theme import apply_theme
 
 def main() -> None:
     st.set_page_config(
-        page_title="EvalForge · LLM Evaluation",
-        page_icon="🧪",
+        page_title="EvalForge · Evaluation workspace",
+        page_icon="✓",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="auto",
         menu_items={
             "Get Help": None,
             "Report a bug": None,
-            "About": "EvalForge makes LLM quality and reliability visible before production.",
+            "About": "EvalForge helps teams compare model and prompt quality before release.",
         },
     )
     apply_theme()
@@ -41,21 +41,21 @@ def main() -> None:
     pages = {
         "overview": st.Page(
             overview.render,
-            title="Overview",
-            icon=":material/dashboard:",
+            title="Home",
+            icon=":material/home:",
             url_path="overview",
             default=True,
         ),
         "run_evaluation": st.Page(
             run_evaluation.render,
-            title="Run Evaluation",
-            icon=":material/science:",
+            title="New evaluation",
+            icon=":material/add_circle:",
             url_path="evaluate",
         ),
         "run_detail": st.Page(
             run_detail.render,
-            title="Run Detail",
-            icon=":material/analytics:",
+            title="Runs",
+            icon=":material/history:",
             url_path="runs",
         ),
         "compare": st.Page(
@@ -66,8 +66,8 @@ def main() -> None:
         ),
         "test_cases": st.Page(
             test_cases.render,
-            title="Test Cases & Prompts",
-            icon=":material/dataset:",
+            title="Benchmarks",
+            icon=":material/library_books:",
             url_path="assets",
         ),
         "settings": st.Page(
@@ -81,22 +81,25 @@ def main() -> None:
 
     with st.sidebar:
         st.title("EvalForge")
-        st.caption("LLM quality, explained.")
-        _render_api_health()
+        st.caption("Evaluation workspace")
         st.divider()
 
     navigation = st.navigation(
         {
-            "Monitor": [pages["overview"], pages["run_detail"], pages["compare"]],
-            "Build": [pages["run_evaluation"], pages["test_cases"]],
-            "Operate": [pages["settings"]],
+            "Workspace": [pages["overview"], pages["run_detail"], pages["compare"]],
+            "Create": [pages["run_evaluation"], pages["test_cases"]],
+            "System": [pages["settings"]],
         },
         position="sidebar",
     )
+    with st.sidebar:
+        st.divider()
+        _render_api_health()
     navigation.run()
 
 
 def _render_api_health() -> None:
+    st.caption("Connection")
     try:
         payload = get_client().health_live()
     except ApiError:
@@ -104,8 +107,9 @@ def _render_api_health() -> None:
     else:
         status = str(payload.get("status", "healthy"))
         render_status_badge(status, prefix="API")
-    st.caption("API origin")
-    st.code(configured_api_url(), language=None)
+    with st.expander("Connection details", expanded=False):
+        st.caption("API origin")
+        st.code(configured_api_url(), language=None)
 
 
 if __name__ == "__main__":

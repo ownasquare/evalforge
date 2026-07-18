@@ -209,3 +209,22 @@ def test_case_import_invalidates_cached_dataset_detail() -> None:
         refreshed = client.dataset("dataset-1")
 
     assert refreshed["cases"] == [{"id": "case-1"}]
+
+
+def test_client_exports_run_evidence_in_json_and_csv() -> None:
+    requests: list[tuple[str, str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path, request.url.params.get("format")))
+        return httpx.Response(200, content=b"evidence")
+
+    with ApiClient("http://api", transport=httpx.MockTransport(handler)) as client:
+        json_export = client.export_run("run-1", export_format="json")
+        csv_export = client.export_run("run-1", export_format="csv")
+
+    assert json_export == b"evidence"
+    assert csv_export == b"evidence"
+    assert requests == [
+        ("GET", "/api/v1/runs/run-1/export", "json"),
+        ("GET", "/api/v1/runs/run-1/export", "csv"),
+    ]
