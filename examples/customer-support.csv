@@ -1,0 +1,3 @@
+external_id,input_text,context_chunks,expected_output,required_phrases,constraints_json,tags,relevance_keywords
+refund-window,Can I return an unopened purchase after 20 days?,"[""Unopened items may be returned within 30 days for a full refund.""]",Yes. Unopened items can be returned within 30 days for a full refund.,"[""30 days""]","{""max_words"":45}","[""policy"",""groundedness""]","[""30 days"",""unopened""]"
+password-reset,I forgot my password. What should I do?,"[""Use Forgot password on the sign-in page. Reset links expire after 20 minutes.""]",Use Forgot password and follow the time-limited link sent to the account email.,"[""Forgot password""]","{""max_words"":55}","[""support"",""security""]","[""account email"",""reset link""]"

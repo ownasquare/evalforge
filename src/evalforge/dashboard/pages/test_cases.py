@@ -84,7 +84,7 @@ def _render_datasets(datasets: list[JsonObject], *, editable: bool) -> None:
 
     if editable:
         with st.expander("Create dataset", icon=":material/add_circle:"):
-            with st.form("create-dataset", clear_on_submit=True):
+            with st.form("create-dataset"):
                 name = st.text_input("Dataset name", max_chars=120)
                 description = st.text_area("Description", max_chars=1000)
                 submitted = st.form_submit_button("Create dataset", type="primary")
@@ -120,8 +120,10 @@ def _render_datasets(datasets: list[JsonObject], *, editable: bool) -> None:
         cases = [item for item in detail_object["test_cases"] if isinstance(item, dict)]
     _render_case_table(cases)
     if editable:
-        _render_case_forms(dataset_id, cases)
-    _render_import_export(dataset_id, editable=editable)
+        with st.expander("Add or edit cases", icon=":material/edit:"):
+            _render_case_forms(dataset_id, cases)
+    with st.expander("Import or export", icon=":material/import_export:"):
+        _render_import_export(dataset_id, editable=editable)
 
 
 def _render_case_table(cases: list[JsonObject]) -> None:
@@ -151,27 +153,71 @@ def _render_case_forms(dataset_id: str, cases: list[JsonObject]) -> None:
     api = client()
     create_tab, edit_tab = st.tabs(["Add case", "Edit case"])
     with create_tab:
-        with st.form(f"create-case-{dataset_id}", clear_on_submit=True):
+        with st.form(f"create-case-{dataset_id}"):
             name = st.text_input("Case name", max_chars=160)
             input_text = st.text_area("Input", height=120, max_chars=20_000)
-            expected = st.text_area("Expected output / reference", height=120, max_chars=20_000)
-            context = st.text_area("Source context (optional)", height=120, max_chars=50_000)
+            expected = st.text_area(
+                "Expected output / reference",
+                height=120,
+                max_chars=20_000,
+                help=(
+                    "A trusted answer used by correctness checks. Leave it blank when the case "
+                    "should be judged only against source context or explicit criteria."
+                ),
+            )
+            context = st.text_area(
+                "Source context (optional)",
+                height=120,
+                max_chars=50_000,
+                help=(
+                    "Facts the answer must stay grounded in. Context enables groundedness and "
+                    "hallucination checks."
+                ),
+            )
             tags = st.text_input("Tags (comma-separated)", max_chars=500)
+            with st.expander("Advanced scoring criteria", icon=":material/tune:"):
+                required_phrases = st.text_area(
+                    "Required phrases",
+                    placeholder="One phrase per line",
+                    help="The answer must contain each phrase for phrase coverage to pass.",
+                )
+                relevance_keywords = st.text_area(
+                    "Relevance keywords",
+                    placeholder="refund, 30 days, unopened",
+                    help="Keywords used by the relevance check instead of inferring them.",
+                )
+                expects_json = st.checkbox(
+                    "Require valid JSON",
+                    help="Enable the JSON-validity check for this case.",
+                )
+                json_schema_text = st.text_area(
+                    "JSON Schema (optional)",
+                    placeholder='{"type": "object", "required": ["answer"]}',
+                    help="Optional inline schema. External references are not supported.",
+                )
             submitted = st.form_submit_button("Add test case", type="primary")
         if submitted:
             if not input_text.strip():
                 st.warning("Input is required.")
             else:
+                try:
+                    criteria = _criteria_payload(
+                        required_phrases=required_phrases,
+                        relevance_keywords=relevance_keywords,
+                        expects_json=expects_json,
+                        json_schema_text=json_schema_text,
+                    )
+                except ValueError as error:
+                    st.warning(str(error))
+                    return
                 payload = {
                     "external_id": name.strip() or "untitled-case",
                     "position": len(cases),
                     "input_text": input_text,
                     "expected_output": expected or None,
                     "context_text": context or None,
-                    "required_phrases": [],
-                    "constraints_json": {},
                     "tags": _split_tags(tags),
-                    "metadata_json": {},
+                    **criteria,
                 }
                 try:
                     api.create_test_case(dataset_id, payload)
@@ -196,6 +242,18 @@ def _render_case_forms(dataset_id: str, cases: list[JsonObject]) -> None:
             format_func=lambda value: case_options.get(value, value),
         )
         selected = case_by_id[case_id]
+        selected_constraints = first_value(
+            selected,
+            "constraints_json",
+            "constraints",
+            default={},
+        )
+        selected_constraints = (
+            selected_constraints if isinstance(selected_constraints, dict) else {}
+        )
+        selected_metadata = first_value(selected, "metadata_json", "metadata", default={})
+        selected_metadata = selected_metadata if isinstance(selected_metadata, dict) else {}
+        selected_schema = selected_constraints.get("json_schema")
         with st.form(f"edit-case-{dataset_id}-{case_id}"):
             edit_name = st.text_input(
                 "Case name",
@@ -224,12 +282,68 @@ def _render_case_forms(dataset_id: str, cases: list[JsonObject]) -> None:
                 "Source context",
                 value=str(first_value(selected, "context_text", "context", default="")),
                 key=f"edit-case-context-{case_id}",
+                help=(
+                    "Facts the answer must stay grounded in. Context enables groundedness and "
+                    "hallucination checks."
+                ),
             )
+            with st.expander("Advanced scoring criteria", icon=":material/tune:"):
+                edit_required_phrases = st.text_area(
+                    "Required phrases",
+                    value="\n".join(
+                        str(value)
+                        for value in selected.get("required_phrases", [])
+                        if isinstance(value, str)
+                    ),
+                    key=f"edit-case-required-{case_id}",
+                )
+                edit_relevance_keywords = st.text_area(
+                    "Relevance keywords",
+                    value="\n".join(
+                        str(value)
+                        for value in selected_metadata.get("relevance_keywords", [])
+                        if isinstance(value, str)
+                    ),
+                    key=f"edit-case-relevance-{case_id}",
+                )
+                edit_expects_json = st.checkbox(
+                    "Require valid JSON",
+                    value=(
+                        selected_constraints.get("expects_json") is True
+                        or isinstance(selected_schema, dict)
+                    ),
+                    key=f"edit-case-json-{case_id}",
+                )
+                edit_json_schema_text = st.text_area(
+                    "JSON Schema (optional)",
+                    value=(
+                        json.dumps(selected_schema, indent=2, ensure_ascii=False)
+                        if isinstance(selected_schema, dict)
+                        else ""
+                    ),
+                    key=f"edit-case-schema-{case_id}",
+                )
             updated = st.form_submit_button("Save changes", type="primary")
         if updated:
             if not edit_input.strip():
                 st.warning("Input is required.")
             else:
+                try:
+                    criteria = _criteria_payload(
+                        required_phrases=edit_required_phrases,
+                        relevance_keywords=edit_relevance_keywords,
+                        expects_json=edit_expects_json,
+                        json_schema_text=edit_json_schema_text,
+                    )
+                except ValueError as error:
+                    st.warning(str(error))
+                    return
+                constraints = dict(selected_constraints)
+                constraints.pop("expects_json", None)
+                constraints.pop("json_schema", None)
+                constraints.update(criteria["constraints_json"])
+                metadata = dict(selected_metadata)
+                metadata["relevance_keywords"] = criteria["metadata_json"]["relevance_keywords"]
                 try:
                     api.update_test_case(
                         case_id,
@@ -239,6 +353,9 @@ def _render_case_forms(dataset_id: str, cases: list[JsonObject]) -> None:
                             "expected_output": edit_expected or None,
                             "context_text": edit_context or None,
                             "tags": selected.get("tags", []),
+                            "required_phrases": criteria["required_phrases"],
+                            "constraints_json": constraints,
+                            "metadata_json": metadata,
                         },
                     )
                 except ApiError as error:
@@ -261,6 +378,11 @@ def _render_import_export(dataset_id: str, *, editable: bool) -> None:
             type=["json", "csv"],
             accept_multiple_files=False,
             key=f"case-import-{dataset_id}",
+            help=(
+                "JSON may be a case list or an object with a cases list. CSV requires "
+                "input_text; list and object columns use JSON text. See docs/api.md and the "
+                "examples folder for copyable templates."
+            ),
         )
         if uploaded is not None:
             size = getattr(uploaded, "size", None)
@@ -330,10 +452,9 @@ def _render_dataset_export(api: Any, dataset_id: str) -> None:
 def _render_prompts(prompts: list[JsonObject], *, editable: bool) -> None:
     api = client()
     st.subheader("Prompt templates")
-    st.info(
+    st.caption(
         "Allowed placeholders: {input} and {context}. Reference answers are evaluator-only. "
-        "The API validates templates before a run is created.",
-        icon=":material/verified_user:",
+        "Templates are validated before a run is created."
     )
     if prompts:
         rows = [
@@ -357,94 +478,101 @@ def _render_prompts(prompts: list[JsonObject], *, editable: bool) -> None:
         _render_prompt_inspector(prompts)
         return
 
-    create_tab, edit_tab, inspect_tab = st.tabs(["Create", "Edit", "Inspect"])
-    with create_tab:
-        with st.form("create-prompt", clear_on_submit=True):
-            name = st.text_input("Prompt name", max_chars=120)
-            description = st.text_area("Description", max_chars=1000)
-            system_template = st.text_area("System template", height=120, max_chars=20_000)
-            user_template = st.text_area(
-                "User template",
-                value="{input}",
-                height=160,
-                max_chars=50_000,
-            )
-            submitted = st.form_submit_button("Create prompt", type="primary")
-        if submitted:
-            if not name.strip() or not user_template.strip():
-                st.warning("Prompt name and user template are required.")
-            else:
-                try:
-                    api.create_prompt(
-                        {
-                            "name": name.strip(),
-                            "description": description.strip(),
-                            "system_template": system_template,
-                            "user_template": user_template,
-                        }
-                    )
-                except ApiError as error:
-                    render_api_error(error, title="The prompt was not created")
-                else:
-                    st.success("Prompt created.")
-                    st.rerun()
-
-    with edit_tab:
-        if not prompts:
-            st.info("Create a prompt before editing.")
-        else:
-            prompt_by_id = {
-                resource_id(prompt): prompt for prompt in prompts if resource_id(prompt)
-            }
-            options = {
-                prompt_id: resource_label(prompt, fallback="Prompt")
-                for prompt_id, prompt in prompt_by_id.items()
-            }
-            prompt_id = st.selectbox(
-                "Prompt to edit",
-                options=list(options),
-                format_func=lambda value: options.get(value, value),
-                key="prompt-edit-selector",
-            )
-            selected = prompt_by_id[prompt_id]
-            with st.form(f"edit-prompt-{prompt_id}"):
-                edited_name = st.text_input(
-                    "Prompt name",
-                    value=str(first_value(selected, "name", "title", default="")),
-                )
-                edited_description = st.text_area(
-                    "Description", value=str(first_value(selected, "description", default=""))
-                )
-                edited_system = st.text_area(
-                    "System template",
-                    value=str(
-                        first_value(selected, "system_template", "system_prompt", default="")
-                    ),
-                )
-                edited_user = st.text_area(
+    with st.expander("Create, edit or inspect prompts", icon=":material/edit_document:"):
+        create_tab, edit_tab, inspect_tab = st.tabs(["Create", "Edit", "Inspect"])
+        with create_tab:
+            with st.form("create-prompt"):
+                name = st.text_input("Prompt name", max_chars=120)
+                description = st.text_area("Description", max_chars=1000)
+                system_template = st.text_area("System template", height=120, max_chars=20_000)
+                user_template = st.text_area(
                     "User template",
-                    value=str(first_value(selected, "user_template", "template", default="")),
+                    value="{input}",
+                    height=160,
+                    max_chars=50_000,
                 )
-                updated = st.form_submit_button("Save changes", type="primary")
-            if updated:
-                try:
-                    api.update_prompt(
-                        prompt_id,
-                        {
-                            "name": edited_name.strip(),
-                            "description": edited_description.strip(),
-                            "system_template": edited_system,
-                            "user_template": edited_user,
-                        },
-                    )
-                except ApiError as error:
-                    render_api_error(error, title="The prompt was not updated")
+                submitted = st.form_submit_button("Create prompt", type="primary")
+            if submitted:
+                if not name.strip() or not user_template.strip():
+                    st.warning("Prompt name and user template are required.")
                 else:
-                    st.success("Prompt updated.")
-                    st.rerun()
+                    try:
+                        api.create_prompt(
+                            {
+                                "name": name.strip(),
+                                "description": description.strip(),
+                                "system_template": system_template,
+                                "user_template": user_template,
+                            }
+                        )
+                    except ApiError as error:
+                        render_api_error(error, title="The prompt was not created")
+                    else:
+                        st.success("Prompt created.")
+                        st.rerun()
 
-    with inspect_tab:
-        _render_prompt_inspector(prompts)
+        with edit_tab:
+            if not prompts:
+                st.info("Create a prompt before editing.")
+            else:
+                prompt_by_id = {
+                    resource_id(prompt): prompt for prompt in prompts if resource_id(prompt)
+                }
+                options = {
+                    prompt_id: resource_label(prompt, fallback="Prompt")
+                    for prompt_id, prompt in prompt_by_id.items()
+                }
+                prompt_id = st.selectbox(
+                    "Prompt to edit",
+                    options=list(options),
+                    format_func=lambda value: options.get(value, value),
+                    key="prompt-edit-selector",
+                )
+                selected = prompt_by_id[prompt_id]
+                with st.form(f"edit-prompt-{prompt_id}"):
+                    edited_name = st.text_input(
+                        "Prompt name",
+                        value=str(first_value(selected, "name", "title", default="")),
+                    )
+                    edited_description = st.text_area(
+                        "Description",
+                        value=str(first_value(selected, "description", default="")),
+                    )
+                    edited_system = st.text_area(
+                        "System template",
+                        value=str(
+                            first_value(
+                                selected,
+                                "system_template",
+                                "system_prompt",
+                                default="",
+                            )
+                        ),
+                    )
+                    edited_user = st.text_area(
+                        "User template",
+                        value=str(first_value(selected, "user_template", "template", default="")),
+                    )
+                    updated = st.form_submit_button("Save changes", type="primary")
+                if updated:
+                    try:
+                        api.update_prompt(
+                            prompt_id,
+                            {
+                                "name": edited_name.strip(),
+                                "description": edited_description.strip(),
+                                "system_template": edited_system,
+                                "user_template": edited_user,
+                            },
+                        )
+                    except ApiError as error:
+                        render_api_error(error, title="The prompt was not updated")
+                    else:
+                        st.success("Prompt updated.")
+                        st.rerun()
+
+        with inspect_tab:
+            _render_prompt_inspector(prompts)
 
 
 def _render_prompt_inspector(prompts: list[JsonObject]) -> None:
@@ -485,6 +613,49 @@ def _tags(value: Any) -> str:
     if isinstance(value, list):
         return ", ".join(str(tag) for tag in value)
     return str(value or "")
+
+
+def _split_terms(value: str) -> list[str]:
+    """Parse compact comma/newline criteria while preserving user order."""
+    terms: list[str] = []
+    for line in value.splitlines():
+        for part in line.split(","):
+            term = part.strip()
+            if term and term not in terms:
+                terms.append(term)
+    return terms
+
+
+def _criteria_payload(
+    *,
+    required_phrases: str,
+    relevance_keywords: str,
+    expects_json: bool,
+    json_schema_text: str,
+) -> dict[str, Any]:
+    """Translate the advanced case disclosure into the published API fields."""
+    schema_text = json_schema_text.strip()
+    schema: dict[str, Any] | None = None
+    if schema_text:
+        try:
+            decoded = json.loads(schema_text)
+        except json.JSONDecodeError as error:
+            raise ValueError("JSON Schema must be valid JSON.") from error
+        if not isinstance(decoded, dict):
+            raise ValueError("JSON Schema must be a JSON object.")
+        schema = decoded
+
+    constraints: dict[str, Any] = {}
+    if expects_json or schema is not None:
+        constraints["expects_json"] = True
+    if schema is not None:
+        constraints["json_schema"] = schema
+
+    return {
+        "required_phrases": _split_terms(required_phrases),
+        "constraints_json": constraints,
+        "metadata_json": {"relevance_keywords": _split_terms(relevance_keywords)},
+    }
 
 
 def _split_tags(value: str) -> list[str]:

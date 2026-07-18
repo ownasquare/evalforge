@@ -22,3 +22,10 @@ dist/
 build/
 test-results/
 playwright-report/
+
+# Local agent and execution artifacts are never part of the public project.
+.codex-*/
+docs/handoffs/
+docs/superpowers/plans/
+*.handoff.mdc
+*.precompact.handoff.mdc

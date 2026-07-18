@@ -1,150 +1,88 @@
 # EvalForge
 
-**Make LLM quality visible before it reaches production.**
+**Compare prompts and models against the same test set before you ship.**
 
-EvalForge is a provider-neutral evaluation workbench for comparing prompts and models over a
-versioned benchmark. It records immutable run provenance, explains every score, separates quality
-from latency and cost, and ships with a deterministic offline demo that needs no API key.
+EvalForge is a local-first evaluation dashboard for teams building with LLMs. It runs a shared set
+of test cases across prompt and model candidates, then shows correctness, relevance, groundedness,
+hallucination risk, speed, and cost in one reviewable result. The included demo is deterministic,
+works offline, and needs no API key.
 
-## What you can do
+![EvalForge result review showing the outcome summary and candidate comparison](docs/assets/evalforge-results.png)
 
-- Build or import reusable JSON/CSV test suites.
-- Version system and user prompts with strict, auditable placeholders.
-- Run every selected prompt against every selected model profile.
-- Score correctness, relevance, phrase coverage, JSON validity, groundedness, hallucination risk,
-  and constraint/style adherence.
-- Compare paired results by test case, including wins, ties, failures, median/P95 latency, token
-  usage, and estimated cost.
-- Inspect the exact output, reference, context, metric evidence, prompt/model snapshot, request ID,
-  and error classification behind a result.
-- Export a versioned, SHA-256-addressed evidence package with a content-redacted default or an
-  explicitly confirmed full-evidence profile.
-- Use zero-configuration local identity on loopback, or configure OIDC-backed shared workspaces
-  with Viewer, Editor, Admin, and Owner roles.
-- Exercise the entire product offline with repeatable demo providers, then explicitly opt into an
-  OpenAI or OpenAI-compatible backend.
+## Try it locally
 
-## Architecture
-
-```mermaid
-flowchart LR
-    UI["Streamlit dashboard"] -->|"OIDC token and workspace context"| API["FastAPI"]
-    API --> AUTH["Authentication and role checks"]
-    AUTH --> SVC["Tenant-scoped services"]
-    SVC --> DB[("SQLite or PostgreSQL")]
-    WORKER["Embedded or external worker"] --> LEASES["Database leases and attempts"]
-    LEASES --> DB
-    WORKER --> MODELS["Provider adapters"]
-    WORKER --> METRICS["Versioned metrics and evaluators"]
-    MODELS --> DEMO["Deterministic offline models"]
-    MODELS --> REAL["Explicit real-provider mode"]
-```
-
-FastAPI is the system of record. The Streamlit process never opens the database or receives
-provider secrets. SQLite is the default for one embedded worker on a local filesystem. PostgreSQL
-supports database-backed atomic claims, renewable leases, bounded takeover, cancellation, and
-separate `api_only` / `database_worker` processes. A database lease prevents duplicate claims; it
-cannot make an externally billed request exactly-once, so billing-ambiguous attempts are retained
-and are never replayed automatically.
-
-Shared OIDC mode additionally requires Streamlit's server-side OAuth client and access-token
-exposure configuration. Follow the secret-mount and identity setup in
-[`docs/operations.md`](docs/operations.md); backend OIDC environment values alone are not a complete
-dashboard login configuration.
-
-## Five-minute offline demo
-
-Prerequisites: Python 3.11 or 3.12 and [uv](https://docs.astral.sh/uv/).
+You need Python 3.11 or 3.12 and [uv](https://docs.astral.sh/uv/). From a local clone:
 
 ```bash
-cp .env.example .env
-uv sync --all-groups
-uv run alembic upgrade head
-uv run evalforge seed
+uv sync --frozen
+uv run evalforge demo
 ```
 
-Start the API in one terminal:
+Open `http://127.0.0.1:8501`. EvalForge creates a local database, installs sample data, and starts
+the API and dashboard for you. Press `Ctrl+C` when you are done.
 
-```bash
-uv run python scripts/start_api.py
-```
+For a guided first run, see [Getting started](docs/getting-started.md).
 
-Start the dashboard in another terminal:
+## The core workflow
 
-```bash
-uv run python scripts/start_dashboard.py
-```
+1. **Choose a test set.** Start with a sample benchmark or import JSON/CSV cases.
+2. **Choose candidates.** Compare prompts and model profiles, and select the baseline.
+3. **Review the result.** Find regressions, inspect the evidence, and export a review package.
 
-The validated script launches the canonical neutral entry point at
-`src/evalforge/streamlit_app.py`; use that path for any direct Streamlit tooling as well.
+Everything else supports that loop. Provider setup, shared-workspace controls, and operational
+details stay out of the way until you need them.
 
-Open `http://127.0.0.1:8501`, choose **New evaluation**, name the run, and compare the seeded prompt
-and demo model profiles. The first prompt/model pair is shown as the shared-case comparison
-baseline. API documentation is available at `http://127.0.0.1:8000/docs` in development.
+## What EvalForge measures
 
-## Truthful score semantics
+| Signal | What it helps answer |
+| --- | --- |
+| Correctness | Does the output match the expected answer? |
+| Relevance | Does it address the question or configured keywords? |
+| Groundedness | Are claims supported by the supplied context? |
+| Hallucination risk | Does the output introduce unsupported facts, numbers, or links? |
+| Constraints | Is the format, phrase, JSON, or style requirement satisfied? |
+| Operations | What were the latency, token usage, and known estimated cost? |
 
-EvalForge's built-in quality metrics are deterministic, explainable heuristics. They are useful for
-regression gates and fast comparison, not substitutes for calibrated human review.
+Built-in quality scores are deterministic, explainable heuristics. They are useful for regression
+checks and comparisons, not a replacement for calibrated human review. A metric is marked not
+applicable when its required evidence is missing; EvalForge does not invent a score.
 
-- Correctness is not applicable without a reference answer.
-- Groundedness and hallucination risk are not applicable without source context or factual
-  reference evidence.
-- Unknown model pricing is reported as unavailable, never as zero cost.
-- Demo latency and usage are labeled synthetic.
-- A quality summary averages only the explicitly selected, applicable quality metrics and always
-  exposes its denominator and weights.
+## Use your own data and models
 
-The metric formulas, versions, limitations, and evidence fields are documented in
-[`docs/evaluation-methodology.md`](docs/evaluation-methodology.md).
+- Open **Benchmarks** under **Library** to import a JSON or CSV test set.
+- Add a prompt version and a model profile in the dashboard.
+- Keep the default offline models while learning the workflow.
+- Enable a real provider only after reviewing the data-transfer and spend controls in
+  [Operations](docs/operations.md).
 
-## Real providers are opt-in
+Real provider calls are disabled by default. Provider credentials stay in backend settings and are
+never entered in the dashboard or stored in a run request.
 
-Real calls are disabled by default. The backend requires an environment-only key, a server-side
-model allowlist, `EVALFORGE_REAL_RUNS_ENABLED=true`, explicit acknowledgment of external data
-transfer and cost, and a user-selected spend ceiling. Preflight must fit both that ceiling and the
-server cap before submission. Runs containing unpriced models require a separate unknown-cost
-acknowledgment; the ceiling remains a planning control rather than a provider billing limit. The API
-never accepts a provider base URL or secret in a run request and never silently switches between
-Responses and Chat Completions after a failure. Billable generation makes exactly one network
-attempt per planned call, including on HTTP 429; preflight reports zero automatic retries and the
-same maximum request count as the logical call count. The input guard uses rendered UTF-8 bytes plus
-a configurable per-request framing margin; it is deliberately labeled as a safety estimate, not
-tokenizer output or invoice data.
+## Extend the source
 
-## Quality gates
-
-```bash
-make check
-```
-
-The deterministic suite covers metric boundaries, provider contracts, identity and cross-tenant
-authorization, database migrations and leases, run state transitions, immutable snapshots, API
-validation, imports, comparisons, export packages, and Streamlit AppTest journeys. PostgreSQL 17
-integration tests exercise migration, lease contention, and lifecycle behavior. A separate
-credential-free Playwright job starts the real API and dashboard and runs the seeded workflow plus
-the cold-route and mobile matrices. Live-provider tests are marked `live`, excluded from normal CI,
-and skip before credential or client access when no explicitly registered judge is available.
+EvalForge has typed source-level contracts for model adapters, asynchronous evaluators, and export
+sinks. It does **not** yet discover third-party plugins automatically; an extension must be wired
+into a source build. See [Extending EvalForge](docs/extending.md) and the tested
+[extension examples](examples/extensions/README.md).
 
 ## Documentation
 
+- [Getting started](docs/getting-started.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Evaluation methodology](docs/evaluation-methodology.md)
 - [Architecture](docs/architecture.md)
 - [API contract](docs/api.md)
-- [Evaluation methodology](docs/evaluation-methodology.md)
-- [Operations](docs/operations.md)
-- [Security](docs/security.md)
-- [Phase 3 hardening record](docs/llm-evaluation-dashboard/2026-07-18-phase-3-hardening.md)
+- [Operations and shared workspaces](docs/operations.md)
+- [Security design](docs/security.md)
 - [Contributing](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
 
-## Current proof boundary
+## Project status
 
-The repository includes deterministic native-process proof, local PostgreSQL 17 lease/lifecycle
-proof, container image builds, Compose configuration validation, mocked provider contracts, and
-desktop/mobile browser journeys. OIDC behavior is locally proven with signed fixtures, but no real
-identity-provider login was performed. This evidence does not imply hosted deployment, production
-TLS/readback, external CI, or paid-provider calibration. The completion record names each proof
-layer independently.
+EvalForge is beta software. The deterministic local workflow, SQLite and PostgreSQL persistence,
+provider contracts, evidence exports, the desktop workflow, and key mobile layouts are covered by
+automated tests.
+Hosted deployment, a specific identity provider, and paid-provider behavior still require your own
+environment-specific validation.
 
-## License
-
-MIT
+Licensed under the [MIT License](LICENSE). See the [changelog](CHANGELOG.md) for release notes.

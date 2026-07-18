@@ -1,0 +1,26 @@
+# Changelog
+
+All notable user-facing changes to EvalForge are recorded here.
+
+This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Changed
+
+- Simplified first-run guidance and public project documentation.
+- Added tested source-extension examples and community templates.
+
+## [0.1.0] - 2026-07-18
+
+### Added
+
+- FastAPI service and Streamlit dashboard for benchmark, prompt, model, run, result, and comparison
+  workflows.
+- Deterministic offline model profiles and explainable built-in metrics.
+- SQLite local mode and PostgreSQL-backed shared-worker support.
+- Local identity and OIDC workspace roles.
+- Content-redacted and full-evidence export packages with integrity hashes.
+- Explicit real-provider transfer, allowlist, and spend safeguards.
+- Automated unit, contract, integration, AppTest, PostgreSQL, and Playwright coverage.

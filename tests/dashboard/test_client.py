@@ -158,6 +158,15 @@ def test_client_uses_concrete_mutation_routes() -> None:
     with ApiClient("http://api", transport=httpx.MockTransport(handler)) as client:
         client.update_test_case("case-1", {"input_text": "Updated"})
         client.update_prompt("prompt-1", {"user_template": "{input}"})
+        client.create_model(
+            {
+                "name": "Approved model",
+                "provider": "openai",
+                "model_name": "gpt-4.1-mini",
+                "api_mode": "responses",
+            }
+        )
+        client.update_model("model-1", {"enabled": False})
         client.preflight_run(
             {"dataset_id": "dataset-1", "prompt_ids": ["prompt-1"], "model_ids": ["model-1"]}
         )
@@ -175,6 +184,8 @@ def test_client_uses_concrete_mutation_routes() -> None:
     assert requests == [
         ("PATCH", "/api/v1/cases/case-1"),
         ("PATCH", "/api/v1/prompts/prompt-1"),
+        ("POST", "/api/v1/models"),
+        ("PATCH", "/api/v1/models/model-1"),
         ("POST", "/api/v1/runs/preflight"),
         ("POST", "/api/v1/runs"),
         ("POST", "/api/v1/datasets/dataset-1/imports"),

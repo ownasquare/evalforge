@@ -24,6 +24,14 @@ from evalforge.database import (
     create_session_factory,
     session_scope,
 )
+from evalforge.demo import (
+    LauncherError,
+    api_command,
+    dashboard_environment,
+    run_demo,
+    run_foreground,
+    ui_command,
+)
 from evalforge.exports import DisclosureProfile, LocalFileSink, build_export_package
 from evalforge.models import AuditEvent, RecordStatus, User, Workspace, WorkspaceMembership
 from evalforge.repositories import EvaluationRunRepository, NotFoundError
@@ -224,6 +232,39 @@ def seed(
         typer.echo(json.dumps({"status": "ready", "counts": counts, **manifest}, indent=2))
     finally:
         engine.dispose()
+
+
+@app.command()
+def api() -> None:
+    """Start the FastAPI service with the validated local settings."""
+
+    returncode = run_foreground(api_command(get_settings()))
+    if returncode:
+        raise typer.Exit(code=returncode)
+
+
+@app.command()
+def ui() -> None:
+    """Start the Streamlit dashboard with the validated local settings."""
+
+    settings = get_settings()
+    returncode = run_foreground(
+        ui_command(settings),
+        environment=dashboard_environment(settings),
+    )
+    if returncode:
+        raise typer.Exit(code=returncode)
+
+
+@app.command()
+def demo() -> None:
+    """Prepare and run the complete offline demo with one command."""
+
+    try:
+        run_demo(get_settings(), emit=typer.echo)
+    except LauncherError as exc:
+        typer.echo(f"EvalForge could not start: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()

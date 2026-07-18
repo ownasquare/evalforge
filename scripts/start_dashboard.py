@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from streamlit.web import cli as streamlit_cli
 
 from evalforge.config import Settings, get_settings
+from evalforge.demo import DASHBOARD_PROVIDER_SECRET_KEYS, dashboard_environment
 
 _AUTH_FILE_ENV = "EVALFORGE_STREAMLIT_AUTH_FILE"
 _REQUIRED_PROVIDER_KEYS = ("client_id", "client_secret", "server_metadata_url")
@@ -21,17 +22,36 @@ def main() -> None:
 
     settings = get_settings()
     auth_file = _validated_auth_file(settings)
+    dashboard_host = settings.dashboard_host
+    dashboard_port = settings.dashboard_port
+    sanitized_environment = dashboard_environment(settings)
+    previous_secrets = {key: os.environ.get(key) for key in DASHBOARD_PROVIDER_SECRET_KEYS}
+    os.environ.update({key: sanitized_environment[key] for key in DASHBOARD_PROVIDER_SECRET_KEYS})
+    cache_clear = getattr(get_settings, "cache_clear", None)
+    if callable(cache_clear):
+        cache_clear()
+    del settings
     launcher = Path(__file__).parents[1] / "src/evalforge/streamlit_app.py"
     arguments = [
         "run",
         str(launcher),
-        f"--server.address={settings.dashboard_host}",
-        f"--server.port={settings.dashboard_port}",
+        f"--server.address={dashboard_host}",
+        f"--server.port={dashboard_port}",
         "--server.headless=true",
     ]
     if auth_file is not None:
         arguments.append(f"--secrets.files={auth_file}")
-    streamlit_cli.main(args=arguments, prog_name="streamlit")
+    try:
+        streamlit_cli.main(args=arguments, prog_name="streamlit")
+    finally:
+        for key, value in previous_secrets.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        cache_clear = getattr(get_settings, "cache_clear", None)
+        if callable(cache_clear):
+            cache_clear()
 
 
 def _validated_auth_file(settings: Settings) -> Path | None:

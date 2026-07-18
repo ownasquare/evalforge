@@ -59,22 +59,13 @@ def render() -> None:
         render_partial_state(
             "Evaluation data loaded, but current execution capability could not be confirmed."
         )
-    _render_workspace_mode(capabilities)
+    run_count = _nonnegative_int(first_value(summary, "runs", "total_runs", default=0))
+    if not run_count:
+        _render_first_run_guide()
+        return
 
-    action_copy, action = st.columns([3, 1], vertical_alignment="center")
-    with action_copy:
-        st.subheader("Continue evaluating")
-        st.caption(
-            "Use a saved benchmark to compare prompt and model candidates on the same cases."
-        )
-    with action:
-        if st.button(
-            "New evaluation",
-            type="primary",
-            icon=":material/add:",
-            width="stretch",
-        ):
-            navigate_to("run_evaluation")
+    _render_workspace_mode(capabilities)
+    _render_primary_action()
 
     render_metric_cards(
         [
@@ -101,18 +92,44 @@ def render() -> None:
         ]
     )
 
-    if not _positive_int(first_value(summary, "runs", "total_runs", default=0)):
-        render_empty_state(
-            "Your workspace is ready",
-            "Run the local sample to see scores, case evidence, and candidate comparisons.",
-            icon=":material/check_circle:",
-        )
-
-    recent_column, evidence_column = st.columns([3, 2])
-    with recent_column:
-        _render_recent_runs(recent)
-    with evidence_column:
+    _render_recent_runs(recent)
+    with st.expander("Pricing and evidence details", icon=":material/info:"):
         _render_evidence_coverage(summary)
+
+
+def _render_first_run_guide() -> None:
+    with st.container(border=True):
+        st.subheader("Start your first comparison")
+        st.caption("The included offline sample needs no API key and makes no provider request.")
+        steps = st.columns(3)
+        steps[0].markdown("**1 · Choose a benchmark**")
+        steps[0].caption("Use the included support cases or import your own.")
+        steps[1].markdown("**2 · Pick candidates**")
+        steps[1].caption("Choose prompts and models, then name the baseline.")
+        steps[2].markdown("**3 · Review results**")
+        steps[2].caption("Inspect failures, compare candidates, and export evidence.")
+        if st.button(
+            "New evaluation",
+            type="primary",
+            icon=":material/arrow_forward:",
+            width="stretch",
+        ):
+            navigate_to("run_evaluation")
+
+
+def _render_primary_action() -> None:
+    action_copy, action = st.columns([3, 1], vertical_alignment="center")
+    with action_copy:
+        st.subheader("Continue evaluating")
+        st.caption("Compare prompt and model candidates on the same trusted test cases.")
+    with action:
+        if st.button(
+            "New evaluation",
+            type="primary",
+            icon=":material/add:",
+            width="stretch",
+        ):
+            navigate_to("run_evaluation")
 
 
 def _render_workspace_mode(capabilities: Any) -> None:
@@ -120,11 +137,6 @@ def _render_workspace_mode(capabilities: Any) -> None:
         st.caption(
             "External provider execution is available. Every paid run still requires explicit "
             "cost review."
-        )
-    else:
-        st.caption(
-            "Offline demo workspace · Deterministic fixtures are available without provider "
-            "requests or billable usage."
         )
 
 
@@ -207,7 +219,3 @@ def _records(value: Any) -> list[dict[str, Any]]:
 
 def _nonnegative_int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
-
-def _positive_int(value: Any) -> bool:
-    return _nonnegative_int(value) > 0

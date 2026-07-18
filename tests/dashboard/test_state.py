@@ -28,6 +28,10 @@ def test_identity_change_clears_workspace_resources_and_plaintext_tokens(monkeyp
             "_evalforge_run_preflight": {"idempotency_key": "attempt"},
             "_evalforge_run_export_json": {"data": b"private"},
             "export-data-dataset-1-json": b"private",
+            "evaluation-scoring-policy": [{"name": "correctness", "enabled": True}],
+            "model-enabled-model-1": False,
+            "edit-case-case-1-input": "private case input",
+            "result-evidence-page-all-all": 3,
             "run_filter": "failed",
             "result_page": 4,
             "_evalforge_flash": {"message": "old", "tone": "success"},
@@ -51,6 +55,10 @@ def test_identity_change_clears_workspace_resources_and_plaintext_tokens(monkeyp
     assert "_evalforge_run_preflight" not in session
     assert "_evalforge_run_export_json" not in session
     assert "export-data-dataset-1-json" not in session
+    assert "evaluation-scoring-policy" not in session
+    assert "model-enabled-model-1" not in session
+    assert "edit-case-case-1-input" not in session
+    assert "result-evidence-page-all-all" not in session
     assert "private-access-token" not in repr(session)
 
 

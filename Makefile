@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help sync lock test coverage lint format typecheck security check migrate seed doctor api ui compose-up compose-down
+.PHONY: help sync lock test coverage lint format typecheck security check migrate seed doctor api ui demo compose-up compose-down
 
 help:
 	@echo "sync          Install the locked runtime and development environment"
@@ -11,6 +11,7 @@ help:
 	@echo "doctor        Check local configuration and readiness"
 	@echo "api           Start FastAPI on loopback port 8000"
 	@echo "ui            Start Streamlit on loopback port 8501"
+	@echo "demo          Prepare and run the complete offline demo"
 	@echo "compose-up    Start the production-shaped local stack"
 
 sync:
@@ -20,25 +21,25 @@ lock:
 	uv lock
 
 test:
-	uv run pytest -q
+	uv run --all-groups pytest -q
 
 coverage:
-	uv run pytest -q --cov=evalforge --cov-branch --cov-report=term-missing
+	uv run --all-groups pytest -q --cov=evalforge --cov-branch --cov-report=term-missing
 
 lint:
-	uv run ruff check .
-	uv run ruff format --check .
+	uv run --all-groups ruff check .
+	uv run --all-groups ruff format --check .
 
 format:
-	uv run ruff check --fix .
-	uv run ruff format .
+	uv run --all-groups ruff check --fix .
+	uv run --all-groups ruff format .
 
 typecheck:
-	uv run mypy src
+	uv run --all-groups mypy src
 
 security:
-	uv run bandit -q -c pyproject.toml -r src
-	uv run pip-audit
+	uv run --all-groups bandit -q -c pyproject.toml -r src
+	uv run --all-groups pip-audit
 
 check: lint typecheck security coverage
 
@@ -52,10 +53,13 @@ doctor:
 	uv run evalforge doctor
 
 api:
-	uv run uvicorn evalforge.api.app:app --host 127.0.0.1 --port 8000 --workers 1
+	uv run evalforge api
 
 ui:
-	uv run streamlit run src/evalforge/streamlit_app.py --server.address 127.0.0.1 --server.port 8501
+	uv run evalforge ui
+
+demo:
+	uv run evalforge demo
 
 compose-up:
 	docker compose up --build -d

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 from uuid import uuid4
 
@@ -78,14 +79,13 @@ def render() -> None:
 
     datasets = list_payload(datasets_payload)
     prompts = list_payload(prompts_payload)
-    models = list_payload(models_payload)
-    if not datasets or not prompts or not models:
+    models = _selectable_models(list_payload(models_payload))
+    if not datasets or not prompts:
         missing = [
             label
             for label, items in (
                 ("datasets", datasets),
                 ("prompt versions", prompts),
-                ("models", models),
             )
             if not items
         ]
@@ -96,6 +96,15 @@ def render() -> None:
         )
         if st.button("Open benchmarks", icon=":material/arrow_forward:"):
             navigate_to("test_cases")
+        return
+    if not models:
+        render_empty_state(
+            "Add an available model profile",
+            "Enable an existing model profile or add one before starting an evaluation.",
+            icon=":material/model_training:",
+        )
+        if st.button("Open models", icon=":material/arrow_forward:"):
+            navigate_to("models")
         return
 
     dataset_options = option_map(datasets, fallback="Dataset")
@@ -112,7 +121,13 @@ def render() -> None:
             format_func=lambda value: dataset_options.get(value, value),
             help="Every selected candidate runs against this versioned dataset.",
         )
-        suggested_name = f"{dataset_options.get(dataset_id, 'Benchmark')} review"
+        dataset_name = first_value(
+            dataset_by_id.get(dataset_id, {}),
+            "name",
+            "title",
+            default=dataset_options.get(dataset_id, "Benchmark"),
+        )
+        suggested_name = f"{dataset_name} comparison"
         run_name = st.text_input(
             "Run name",
             value=suggested_name,
@@ -145,8 +160,43 @@ def render() -> None:
                 options=list(model_options),
                 default=demo_model_ids or list(model_options)[:1],
                 format_func=lambda value: model_options.get(value, value),
-                help="The first prompt/model pair becomes the comparison baseline.",
+                help="Each selected model is paired with every selected prompt version.",
             )
+
+        baseline_left, baseline_right = st.columns(2)
+        with baseline_left:
+            baseline_prompt_id = (
+                st.selectbox(
+                    "Baseline prompt",
+                    options=prompt_ids,
+                    format_func=lambda value: prompt_options.get(value, value),
+                    disabled=len(prompt_ids) <= 1,
+                    help=(
+                        "The baseline is the current or trusted candidate that every challenger "
+                        "will be compared with."
+                    ),
+                )
+                if prompt_ids
+                else None
+            )
+        with baseline_right:
+            baseline_model_id = (
+                st.selectbox(
+                    "Baseline model",
+                    options=model_ids,
+                    format_func=lambda value: model_options.get(value, value),
+                    disabled=len(model_ids) <= 1,
+                    help=(
+                        "Choose the model profile used by the baseline. This does not change the "
+                        "other candidate combinations."
+                    ),
+                )
+                if model_ids
+                else None
+            )
+
+    prompt_ids = _baseline_first(prompt_ids, baseline_prompt_id)
+    model_ids = _baseline_first(model_ids, baseline_model_id)
 
     selected_models = [model_by_id[model_id] for model_id in model_ids if model_id in model_by_id]
     has_real_provider = any(not is_demo_record(model) for model in selected_models)
@@ -158,6 +208,80 @@ def render() -> None:
         model_options=model_options,
         model_by_id=model_by_id,
     )
+
+    st.subheader("3. Scoring")
+    scoring_rows = _scoring_rows(capabilities)
+    with st.container(border=True):
+        st.selectbox(
+            "Scoring policy",
+            options=["Balanced — recommended"],
+            disabled=True,
+            help=(
+                "Uses correctness, relevance, groundedness, hallucination risk, and "
+                "case-specific checks. Open Customize scoring to change the included checks, "
+                "thresholds, or weights for this evaluation."
+            ),
+        )
+        st.caption(
+            "Correctness, relevance, groundedness and hallucination risk are evaluated "
+            "alongside any benchmark-specific requirements."
+        )
+        if scoring_rows:
+            with st.expander("Customize scoring", icon=":material/tune:"):
+                edited_scoring_rows = st.data_editor(
+                    scoring_rows,
+                    hide_index=True,
+                    width="stretch",
+                    num_rows="fixed",
+                    column_config={
+                        "Use": st.column_config.CheckboxColumn(
+                            "Use",
+                            help="Include this check in the overall score.",
+                        ),
+                        "Check": st.column_config.TextColumn("Check", disabled=True),
+                        "Pass threshold": st.column_config.NumberColumn(
+                            "Pass threshold",
+                            min_value=0.0,
+                            max_value=1.0,
+                            step=0.05,
+                            format="%.2f",
+                            help=(
+                                "Minimum accepted score, except hallucination risk where lower "
+                                "is better."
+                            ),
+                        ),
+                        "Weight": st.column_config.NumberColumn(
+                            "Weight",
+                            min_value=0.0,
+                            max_value=10.0,
+                            step=0.25,
+                            format="%.2f",
+                            help="Relative influence on the overall score.",
+                        ),
+                        "_metric": None,
+                        "_version": None,
+                        "_direction": None,
+                    },
+                    key="evaluation-scoring-policy",
+                )
+                scoring_rows = (
+                    edited_scoring_rows.to_dict("records")
+                    if hasattr(edited_scoring_rows, "to_dict")
+                    else list(edited_scoring_rows)
+                )
+                st.caption(
+                    "Thresholds decide pass/fail; weights control the combined score. "
+                    "The original metric evidence is always retained."
+                )
+        else:
+            st.caption("The server will apply its published balanced scoring defaults.")
+    metrics_payload: list[dict[str, Any]] = []
+    scoring_error: str | None = None
+    if scoring_rows:
+        try:
+            metrics_payload = _scoring_payload(scoring_rows)
+        except ValueError as error:
+            scoring_error = str(error)
 
     if isinstance(dataset_detail, dict):
         dataset = dataset_detail
@@ -173,15 +297,15 @@ def render() -> None:
     )
     real_enabled = _real_runs_enabled(capabilities)
 
-    st.subheader("3. Check and start")
+    st.subheader("4. Review and start")
     preflight_columns = st.columns(4)
     preflight_columns[0].metric("Test cases", format_count(case_count))
     preflight_columns[1].metric("Prompt versions", format_count(len(prompt_ids)))
     preflight_columns[2].metric("Model profiles", format_count(len(model_ids)))
     preflight_columns[3].metric("Planned calls", format_count(call_count))
     st.caption(
-        "Server preflight calculates a conservative input-token bound and a known-price "
-        "cost estimate before any run is created."
+        "Review the evaluation size before starting. Safety and pricing details appear only "
+        "when relevant."
     )
 
     blockers: list[str] = []
@@ -199,6 +323,8 @@ def render() -> None:
         blockers.append("Server preflight limits are unavailable.")
     if dataset_detail_error:
         blockers.append("The selected dataset detail could not be loaded.")
+    if scoring_error:
+        blockers.append(scoring_error)
     if has_real_provider and not real_enabled:
         blockers.append("Real-provider runs are disabled by the backend.")
 
@@ -254,6 +380,8 @@ def render() -> None:
         "acknowledge_external_data_transfer": bool(has_real_provider and acknowledged_transfer),
         "spend_limit_micro_usd": spend_limit_micro_usd,
     }
+    if metrics_payload:
+        preflight_payload["metrics"] = metrics_payload
     signature = (
         run_name.strip(),
         dataset_id,
@@ -262,7 +390,38 @@ def render() -> None:
         bool(has_real_provider and acknowledged_cost),
         bool(has_real_provider and acknowledged_transfer),
         spend_limit_micro_usd,
+        tuple(
+            (
+                item.get("name"),
+                item.get("version"),
+                item.get("direction"),
+                item.get("weight"),
+                item.get("threshold"),
+            )
+            for item in metrics_payload
+        ),
     )
+
+    if not has_real_provider:
+        if st.button(
+            "Start evaluation",
+            type="primary",
+            icon=":material/play_arrow:",
+            disabled=bool(blockers),
+            width="stretch",
+        ):
+            try:
+                api.preflight_run(preflight_payload)
+            except ApiError as error:
+                render_api_error(error, title="The evaluation setup did not pass")
+            else:
+                _submit_run(
+                    api,
+                    {**preflight_payload, "acknowledge_unknown_cost": False},
+                    idempotency_key=str(uuid4()),
+                )
+        return
+
     if st.button(
         "Check setup",
         icon=":material/check_circle:",
@@ -348,21 +507,25 @@ def render() -> None:
             st.session_state.pop("_evalforge_run_preflight", None)
             render_partial_state("Preflight expired. Validate the matrix again before submission.")
             return
-        try:
-            run = api.create_run(payload, idempotency_key=idempotency_key)
-        except ApiError as error:
-            render_api_error(error, title="The evaluation was not submitted")
-        else:
-            st.session_state.pop("_evalforge_run_preflight", None)
-            run_id = resource_id(run)
-            if not run_id:
-                render_partial_state(
-                    "The API accepted the run but did not return an identifier. Check run history."
-                )
-            else:
-                select_run(run_id, active=True)
-                st.success("Evaluation queued. Progress will appear here.")
-                st.rerun()
+        _submit_run(api, payload, idempotency_key=idempotency_key)
+
+
+def _submit_run(api: Any, payload: dict[str, Any], *, idempotency_key: str) -> None:
+    try:
+        run = api.create_run(payload, idempotency_key=idempotency_key)
+    except ApiError as error:
+        render_api_error(error, title="The evaluation was not submitted")
+        return
+    st.session_state.pop("_evalforge_run_preflight", None)
+    run_id = resource_id(run)
+    if not run_id:
+        render_partial_state(
+            "The API accepted the run but did not return an identifier. Check Results."
+        )
+        return
+    select_run(run_id, active=True)
+    st.success("Evaluation queued. Progress will appear here.")
+    st.rerun()
 
 
 @st.fragment(run_every="2s")
@@ -456,12 +619,109 @@ def _render_candidate_preview(
     if not rows:
         st.caption("Choose at least one prompt and model to build the candidate matrix.")
         return
-    st.caption("Candidate matrix")
-    st.dataframe(rows, hide_index=True, width="stretch")
-    st.caption(
-        "The first prompt/model pair is the comparison baseline. Every other pair is compared "
-        "with it on the same test cases."
-    )
+    with st.expander(
+        f"Review {len(rows):,} candidate{'s' if len(rows) != 1 else ''}",
+        icon=":material/table_view:",
+    ):
+        st.dataframe(rows, hide_index=True, width="stretch")
+        st.caption(
+            "The selected baseline is listed first. Every challenger is compared on the same "
+            "test cases."
+        )
+
+
+def _baseline_first(values: list[str], selected: str | None) -> list[str]:
+    """Return a stable candidate order with the explicit baseline first."""
+    if selected not in values:
+        return list(values)
+    return [selected, *(value for value in values if value != selected)]
+
+
+def _selectable_models(models: list[JsonObject]) -> list[JsonObject]:
+    """Exclude explicitly paused profiles while preserving older API responses."""
+    return [model for model in models if model.get("enabled") is not False]
+
+
+def _scoring_rows(capabilities: Any) -> list[dict[str, Any]]:
+    """Build compact, editable rows from the server-published metric policy."""
+    if not isinstance(capabilities, dict):
+        return []
+    metrics = capabilities.get("metrics")
+    if not isinstance(metrics, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        name = metric.get("name")
+        version = metric.get("version")
+        direction = metric.get("direction")
+        weight = metric.get("weight")
+        threshold = metric.get("threshold")
+        if not isinstance(name, str) or not name:
+            continue
+        if not isinstance(version, str) or not version:
+            continue
+        if not isinstance(direction, str) or not direction:
+            continue
+        if not isinstance(weight, (int, float)) or isinstance(weight, bool):
+            continue
+        if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
+            continue
+        rows.append(
+            {
+                "Use": metric.get("enabled") is not False,
+                "Check": name.replace("_", " ").capitalize(),
+                "Pass threshold": float(threshold),
+                "Weight": float(weight),
+                "_metric": name,
+                "_version": version,
+                "_direction": direction,
+            }
+        )
+    return rows
+
+
+def _scoring_payload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate visible scoring rows into the API metric contract."""
+    payload: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("Use") is not True:
+            continue
+        name = row.get("_metric")
+        version = row.get("_version")
+        direction = row.get("_direction")
+        weight = row.get("Weight")
+        threshold = row.get("Pass threshold")
+        if not all(isinstance(value, str) and value for value in (name, version, direction)):
+            raise ValueError(
+                "Each selected scoring check must have a name, version, and direction."
+            )
+        if not isinstance(weight, (int, float)) or isinstance(weight, bool):
+            raise ValueError("Scoring thresholds and weights must be numbers.")
+        if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
+            raise ValueError("Scoring thresholds and weights must be numbers.")
+        if not math.isfinite(float(weight)) or not math.isfinite(float(threshold)):
+            raise ValueError("Scoring thresholds and weights must be finite numbers.")
+        if not 0.0 <= float(threshold) <= 1.0:
+            raise ValueError("Scoring thresholds must be between 0 and 1.")
+        if not 0.0 <= float(weight) <= 10.0:
+            raise ValueError("Scoring weights must be between 0 and 10.")
+        payload.append(
+            {
+                "name": name,
+                "version": version,
+                "direction": direction,
+                "weight": float(weight),
+                "threshold": float(threshold),
+                "enabled": True,
+            }
+        )
+    if not payload:
+        raise ValueError("Select at least one scoring check.")
+    if sum(item["weight"] for item in payload) <= 0:
+        raise ValueError("The selected scoring checks must have a positive total weight.")
+    return payload
 
 
 def _case_count(dataset: JsonObject) -> int:
@@ -540,7 +800,7 @@ def _render_server_estimates(preflight: JsonObject) -> None:
         "max_estimated_cost_micro_usd_per_run",
     )
 
-    st.subheader("Server estimates")
+    st.subheader("Safety and cost estimate")
     token_column, cost_column = st.columns(2)
     input_bound_help = (
         "Computed from rendered UTF-8 bytes plus a per-request framing margin. It is a "
@@ -549,7 +809,7 @@ def _render_server_estimates(preflight: JsonObject) -> None:
     if token_limit is not None:
         input_bound_help = f"{input_bound_help} Server limit: {token_limit:,}."
     token_column.metric(
-        "Padded UTF-8 input guard",
+        "Estimated input size",
         format_count(estimated_tokens),
         help=input_bound_help,
     )
@@ -568,7 +828,4 @@ def _render_server_estimates(preflight: JsonObject) -> None:
         format_micro_usd(known_cost),
         help=cost_help,
     )
-    st.caption(
-        "The input figure is a padded UTF-8 safety estimate, not measured provider tokens. "
-        "The cost figure is an estimate, not a final invoice."
-    )
+    st.caption("These are conservative planning estimates, not measured usage or a final invoice.")

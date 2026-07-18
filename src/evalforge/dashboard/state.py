@@ -27,6 +27,7 @@ _RESOURCE_KEYS_TO_DROP = frozenset(
     {
         "_evalforge_run_preflight",
         "_evalforge_last_finished_run_id",
+        "evaluation-scoring-policy",
     }
 )
 _RESOURCE_PREFIXES_TO_DROP = (
@@ -37,6 +38,9 @@ _RESOURCE_PREFIXES_TO_DROP = (
     "export-format-",
     "prepare-export-",
     "download-export-",
+    "model-enabled-",
+    "edit-case-",
+    "result-evidence-page-",
 )
 
 
@@ -194,6 +198,15 @@ def can_edit() -> bool:
         return True
     workspace = workspace_context()
     return workspace is not None and workspace.role in {"owner", "admin", "editor"}
+
+
+def can_admin() -> bool:
+    """Return whether the current workspace role can manage model profiles."""
+
+    if st.session_state.get(_IDENTITY_KEY, "local") == "local":
+        return True
+    workspace = workspace_context()
+    return workspace is not None and workspace.role in {"owner", "admin"}
 
 
 def mark_reauthentication_required() -> None:

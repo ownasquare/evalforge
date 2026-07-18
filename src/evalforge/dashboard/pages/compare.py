@@ -24,7 +24,7 @@ from evalforge.dashboard.components import (
     resource_label,
     style_figure,
 )
-from evalforge.dashboard.pages.common import client, list_payload, load_resource, run_label
+from evalforge.dashboard.pages.common import client, load_all_runs, load_resource, run_label
 from evalforge.dashboard.state import select_run, selected_run_id
 
 
@@ -35,11 +35,16 @@ def render() -> None:
         eyebrow="Shared-case evidence",
     )
     api = client()
-    runs_payload, runs_error = load_resource("completed runs", api.runs)
-    if runs_error:
+    runs, run_total, runs_error = load_all_runs(api)
+    if runs_error and not runs:
         render_api_error(runs_error)
         return
-    runs = list_payload(runs_payload)
+    if runs_error and run_total is not None:
+        st.warning(
+            f"Loaded {len(runs):,} of {run_total:,} runs. Older comparison history is "
+            "temporarily unavailable.",
+            icon=":material/data_alert:",
+        )
     eligible = [
         run
         for run in runs

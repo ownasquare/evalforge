@@ -36,29 +36,36 @@ from evalforge.dashboard.components import (
 from evalforge.dashboard.pages.common import (
     client,
     list_payload,
+    load_all_runs,
     load_resource,
     nested_summary,
     run_label,
 )
-from evalforge.dashboard.state import can_edit, select_run, selected_run_id
+from evalforge.dashboard.state import can_edit, navigate_to, select_run, selected_run_id
+
+_EVIDENCE_PAGE_SIZE = 50
 
 
 def render() -> None:
     page_header(
-        "Runs",
-        "Inspect scores, outputs, and stored evidence for each evaluation.",
-        eyebrow="Run evidence",
+        "Results",
+        "Understand what passed, what needs attention, and how candidates compare.",
+        eyebrow="Evaluation evidence",
     )
     api = client()
-    runs_payload, runs_error = load_resource("run history", api.runs)
-    if runs_error:
+    runs, run_total, runs_error = load_all_runs(api)
+    if runs_error and not runs:
         render_api_error(runs_error)
         return
-    runs = list_payload(runs_payload)
+    if runs_error and run_total is not None:
+        render_partial_state(
+            f"Loaded {len(runs):,} of {run_total:,} evaluation runs. Older history is "
+            "temporarily unavailable."
+        )
     if not runs:
         render_empty_state(
-            "No evaluation runs yet",
-            "Submit a deterministic evaluation to populate run history and result evidence.",
+            "No evaluation results yet",
+            "Start an evaluation to see scores, outputs, and candidate comparisons here.",
             icon=":material/history:",
         )
         return
@@ -99,7 +106,9 @@ def render() -> None:
                 "Showing embedded results when present."
             )
 
-    _render_run_header(run, api)
+    _render_run_identity(run)
+    _render_result_conclusion(run, results)
+    _render_run_actions(run, api)
     _render_analytics(run, results)
     _render_results(results, candidate_labels=_candidate_labels(run))
 
@@ -146,7 +155,84 @@ def _page_total(payload: Any, *, default: int) -> int:
     return default
 
 
-def _render_run_header(run: dict[str, Any], api: Any) -> None:
+def _render_result_conclusion(run: dict[str, Any], results: list[dict[str, Any]]) -> None:
+    tone, title, message = _result_conclusion(run, results)
+    renderer = {
+        "success": st.success,
+        "warning": st.warning,
+        "info": st.info,
+    }[tone]
+    renderer(f"**{title}**\n\n{message}")
+    if _can_compare(run) and st.button(
+        "Compare candidates",
+        type="primary",
+        icon=":material/compare_arrows:",
+        help="Open the shared-case comparison for this evaluation.",
+    ):
+        select_run(resource_id(run))
+        navigate_to("compare")
+
+
+def _result_conclusion(
+    run: dict[str, Any],
+    results: list[dict[str, Any]],
+) -> tuple[str, str, str]:
+    status = str(first_value(run, "status", "state", default="unknown")).lower()
+    if not is_terminal_status(status):
+        return (
+            "info",
+            "Evaluation in progress",
+            "Results will update as each case finishes.",
+        )
+    if status in {"failed", "cancelled", "interrupted"} and not results:
+        return (
+            "warning",
+            "No comparable results were produced",
+            "Review the status detail, then run the evaluation again when the issue is resolved.",
+        )
+
+    target_misses = sum(_has_target_miss(result) for result in results)
+    if status in {"completed_with_errors", "partial"}:
+        return (
+            "warning",
+            "Review incomplete results",
+            "Some cases did not finish successfully. Check the case evidence before "
+            "comparing candidates.",
+        )
+    if target_misses:
+        label = "result" if target_misses == 1 else "results"
+        return (
+            "warning",
+            "Review target misses",
+            f"{target_misses} scored {label} missed at least one target. Review those cases "
+            "before deciding.",
+        )
+    if _can_compare(run):
+        return (
+            "success",
+            "Ready to compare candidates",
+            "The evaluation finished. Compare the candidates on the same cases before "
+            "choosing one.",
+        )
+    return (
+        "success",
+        "Evaluation complete",
+        "Review the scorecard and case evidence before deciding whether this candidate is ready.",
+    )
+
+
+def _can_compare(run: dict[str, Any]) -> bool:
+    status = str(first_value(run, "status", "state", default="")).lower()
+    candidates = run.get("candidates")
+    count = (
+        len([candidate for candidate in candidates if isinstance(candidate, dict)])
+        if isinstance(candidates, list)
+        else 0
+    )
+    return status in {"completed", "completed_with_errors", "partial"} and count >= 2
+
+
+def _render_run_identity(run: dict[str, Any]) -> None:
     name = resource_label(run, fallback="Evaluation run")
     status = str(first_value(run, "status", "state", default="unknown"))
     top_left, top_right = st.columns([3, 1], vertical_alignment="center")
@@ -159,6 +245,12 @@ def _render_run_header(run: dict[str, Any], api: Any) -> None:
     completed = first_value(run, "completed_items", "completed_count", default=0)
     total = first_value(run, "total_items", "total_count", default=0)
     render_progress(completed, total, status=status)
+
+
+def _render_run_actions(run: dict[str, Any], api: Any) -> None:
+    """Keep technical evidence and controls after the decision-oriented summary."""
+
+    status = str(first_value(run, "status", "state", default="unknown"))
 
     with st.expander("Audit details", icon=":material/fingerprint:"):
         st.caption("Run ID")
@@ -409,20 +501,48 @@ def _render_results(
 
     immutable_labels = candidate_labels or {}
     candidate_options = _candidate_options(results, immutable_labels)
-    selected_candidate = st.selectbox(
-        "Candidate filter",
-        options=["all", *candidate_options],
-        format_func=lambda value: "All candidates" if value == "all" else candidate_options[value],
-    )
+    candidate_column, attention_column = st.columns(2)
+    with candidate_column:
+        selected_candidate = st.selectbox(
+            "Candidate filter",
+            options=["all", *candidate_options],
+            format_func=lambda value: (
+                "All candidates" if value == "all" else candidate_options[value]
+            ),
+        )
+    with attention_column:
+        attention_filter = st.selectbox(
+            "Case filter",
+            options=["all", "needs_attention"],
+            format_func=lambda value: "All cases" if value == "all" else "Needs attention",
+            help="Shows failed, errored, or below-target results.",
+        )
     filtered = [
         result
         for result in results
-        if selected_candidate == "all" or _candidate_id(result) == selected_candidate
+        if (selected_candidate == "all" or _candidate_id(result) == selected_candidate)
+        and (attention_filter == "all" or _needs_attention(result))
     ]
-    if len(filtered) > 50:
-        render_partial_state("Showing the first 50 matching results. Refine the candidate filter.")
+    if not filtered:
+        st.info("No cases match these filters.", icon=":material/filter_alt_off:")
+        return
+    page_number = 1
+    page_count = max(1, math.ceil(len(filtered) / _EVIDENCE_PAGE_SIZE))
+    if page_count > 1:
+        page_number = st.selectbox(
+            "Evidence page",
+            options=list(range(1, page_count + 1)),
+            format_func=lambda value: f"Page {value} of {page_count}",
+            key=f"result-evidence-page-{selected_candidate}-{attention_filter}",
+            help=(
+                "Every matching result remains available; pages keep the review screen responsive."
+            ),
+        )
+    page_results, first_position, last_position = _result_page(filtered, page_number)
+    if page_count > 1:
+        st.caption(f"Showing results {first_position:,}-{last_position:,} of {len(filtered):,}.")
 
-    for index, result in enumerate(filtered[:50], start=1):
+    for index, result in enumerate(page_results, start=first_position):
         status = str(first_value(result, "status", "state", default="completed"))
         case_identity = _case_identity(result, fallback=f"Case {index}")
         with st.expander(
@@ -433,6 +553,24 @@ def _render_results(
                 result,
                 candidate_label=immutable_labels.get(_candidate_id(result)),
             )
+
+
+def _result_page(
+    results: list[dict[str, Any]],
+    page_number: int,
+    *,
+    page_size: int = _EVIDENCE_PAGE_SIZE,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Return one clamped, one-indexed page without making later evidence unreachable."""
+
+    if page_size < 1:
+        raise ValueError("page_size must be positive")
+    page_count = max(1, math.ceil(len(results) / page_size))
+    safe_page = min(max(page_number, 1), page_count)
+    start = (safe_page - 1) * page_size
+    page = results[start : start + page_size]
+    first_position = start + 1 if page else 0
+    return page, first_position, start + len(page)
 
 
 def _render_result(result: dict[str, Any], *, candidate_label: str | None = None) -> None:
@@ -469,13 +607,14 @@ def _render_result(result: dict[str, Any], *, candidate_label: str | None = None
         "source_context",
         default=first_value(snapshot, "context_text", "context"),
     )
-    output_tab, reference_tab, context_tab = st.tabs(["Output", "Reference", "Context"])
-    with output_tab:
+    output_column, reference_column = st.columns(2)
+    with output_column:
         safe_text_panel("Model output", output)
-    with reference_tab:
+    with reference_column:
         safe_text_panel("Reference", reference)
-    with context_tab:
-        safe_text_panel("Source context", context)
+    if context:
+        with st.expander("Source context", icon=":material/source:"):
+            safe_text_panel("Source context", context)
 
     metrics = normalized_metric_rows(
         first_value(result, "metric_results", "metrics", "scores", default=[])
@@ -605,6 +744,33 @@ def _passed_label(value: Any) -> str:
 def _candidate_id(result: dict[str, Any]) -> str:
     value = first_value(result, "candidate_id", "run_candidate_id", "model_profile_id")
     return str(value) if value is not None else ""
+
+
+def _needs_attention(result: dict[str, Any]) -> bool:
+    status = str(first_value(result, "status", "state", default="completed")).lower()
+    if status not in {"completed", "success", "succeeded"}:
+        return True
+    return bool(first_value(result, "error_message", "error", "failure_reason")) or (
+        _has_target_miss(result)
+    )
+
+
+def _has_target_miss(result: dict[str, Any]) -> bool:
+    """Return whether any stored aggregate or applicable metric needs review."""
+
+    if result.get("aggregate_passed") is False:
+        return True
+    metrics = normalized_metric_rows(
+        first_value(result, "metric_results", "metrics", "scores", default=[])
+    )
+    error_states = {"error", "errored", "failed", "failure", "invalid"}
+    for metric in metrics:
+        if metric.get("passed") is False:
+            return True
+        states = (metric.get("applicability"), metric.get("status"))
+        if any(str(value).strip().lower() in error_states for value in states if value is not None):
+            return True
+    return False
 
 
 def _metric_scorecard_rows(

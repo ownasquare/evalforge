@@ -63,6 +63,30 @@ orchestrator, or monitoring network.
 Imports enforce byte and row limits. Any invalid row rejects the complete import and returns
 row-numbered errors. Every parent and child lookup is constrained to the selected workspace.
 
+### Benchmark import format
+
+JSON may be either a list of case objects or an object with a `cases` list. Start from the
+[customer-support JSON example](../examples/customer-support.json). Each case accepts:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `input_text` or `input` | Yes | The user input sent through the selected prompt. |
+| `external_id` or `name` | No | A stable, readable case name; generated when omitted. |
+| `expected_output` or `reference` | No | Trusted evaluator-only answer for correctness. |
+| `context_text`, `context`, or `context_chunks` | No | Grounding evidence. `context` may be a string or list. |
+| `required_phrases` | No | JSON list of phrases that must appear. |
+| `constraints_json` or `criteria` | No | Object with format or length requirements. |
+| `tags` | No | JSON list of labels. |
+| `metadata_json` or `metadata` | No | Object for optional metadata, including `relevance_keywords`. |
+| `relevance_keywords` | No | JSON list merged into metadata for relevance scoring. |
+
+CSV uses one case per row. `input_text` is the only required column. Use the same canonical field
+names shown above and encode list/object cells as JSON text. The exported column set is
+`external_id,input_text,context_text,context_chunks,expected_output,required_phrases,constraints_json,tags`;
+`metadata_json` and `relevance_keywords` are also accepted on import. Start from the
+[customer-support CSV example](../examples/customer-support.csv). Files must be UTF-8. Import is
+atomic: one invalid row means no rows are added.
+
 ## Prompt and model endpoints
 
 | Method | Path | Minimum role | Purpose |

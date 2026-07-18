@@ -259,6 +259,16 @@ class ApiClient:
             params={"limit": limit, "page": page},
         )
 
+    def create_model(self, payload: Mapping[str, Any]) -> JsonObject:
+        return self._request_object("POST", "/api/v1/models", json_payload=payload)
+
+    def update_model(self, model_id: str, payload: Mapping[str, Any]) -> JsonObject:
+        return self._request_object(
+            "PATCH",
+            f"/api/v1/models/{model_id}",
+            json_payload=payload,
+        )
+
     def runs(
         self,
         *,

@@ -19,6 +19,7 @@ from evalforge.dashboard.client import ApiError
 from evalforge.dashboard.components import render_status_badge
 from evalforge.dashboard.pages import (
     compare,
+    models,
     overview,
     run_detail,
     run_evaluation,
@@ -27,7 +28,6 @@ from evalforge.dashboard.pages import (
 )
 from evalforge.dashboard.state import (
     configure_client,
-    configured_api_url,
     get_client,
     initialize_state,
     register_pages,
@@ -88,7 +88,7 @@ def _render_workspace(auth_config: DashboardAuthConfig) -> None:
         ),
         "run_detail": st.Page(
             run_detail.render,
-            title="Runs",
+            title="Results",
             icon=":material/history:",
             url_path="runs",
         ),
@@ -103,6 +103,12 @@ def _render_workspace(auth_config: DashboardAuthConfig) -> None:
             title="Benchmarks",
             icon=":material/library_books:",
             url_path="assets",
+        ),
+        "models": st.Page(
+            models.render,
+            title="Models",
+            icon=":material/model_training:",
+            url_path="models",
         ),
         "settings": st.Page(
             settings.render,
@@ -120,15 +126,14 @@ def _render_workspace(auth_config: DashboardAuthConfig) -> None:
             _render_sidebar_identity()
         st.divider()
 
-    library_pages = [pages["test_cases"]]
+    navigation_groups = {"Workspace": [pages["overview"]]}
     if state.can_edit():
-        library_pages.insert(0, pages["run_evaluation"])
+        navigation_groups["Evaluate"] = [pages["run_evaluation"]]
+    navigation_groups["Review"] = [pages["run_detail"], pages["compare"]]
+    navigation_groups["Library"] = [pages["test_cases"], pages["models"]]
+    navigation_groups["System"] = [pages["settings"]]
     navigation = st.navigation(
-        {
-            "Workspace": [pages["overview"], pages["run_detail"], pages["compare"]],
-            "Evaluate": library_pages,
-            "System": [pages["settings"]],
-        },
+        navigation_groups,
         position="sidebar",
     )
     with st.sidebar:
@@ -298,17 +303,11 @@ def _render_sign_out_button() -> None:
 
 
 def _render_api_health() -> None:
-    st.caption("Connection")
     try:
-        payload = get_client().health_live()
+        get_client().health_live()
     except ApiError:
+        st.caption("Connection needs attention")
         render_status_badge("offline", prefix="API")
-    else:
-        status = str(payload.get("status", "healthy"))
-        render_status_badge(status, prefix="API")
-    with st.expander("Connection details", expanded=False):
-        st.caption("API origin")
-        st.code(configured_api_url(), language=None)
 
 
 if __name__ == "__main__":

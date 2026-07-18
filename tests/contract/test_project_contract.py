@@ -5,9 +5,7 @@ ROOT = Path(__file__).parents[2]
 STREAMLIT_LAUNCHER = "src/evalforge/streamlit_app.py"
 STREAMLIT_CONTAINER_WRAPPER = "scripts/start_dashboard.py"
 STREAMLIT_LAUNCH_SURFACES = (
-    "Makefile",
     ".github/workflows/ci.yml",
-    "README.md",
     "docs/operations.md",
     "tests/e2e/test_dashboard_smoke.py",
 )
@@ -73,7 +71,10 @@ def test_streamlit_launch_surfaces_use_the_neutral_launcher() -> None:
 
     dashboard_dockerfile = (ROOT / "Dockerfile.dashboard").read_text()
     dashboard_wrapper = (ROOT / STREAMLIT_CONTAINER_WRAPPER).read_text()
+    makefile = (ROOT / "Makefile").read_text()
     assert STREAMLIT_CONTAINER_WRAPPER in dashboard_dockerfile
     assert STREAMLIT_LAUNCHER in dashboard_wrapper
+    assert "uv run evalforge demo" in makefile
+    assert legacy_launcher not in makefile
     assert legacy_launcher not in dashboard_dockerfile
     assert legacy_launcher not in dashboard_wrapper

@@ -69,7 +69,7 @@ resource from another workspace receives a denial without object-existence detai
 
 Workspace scope is persisted on datasets, prompts, model profiles, runs, candidates, results,
 execution attempts, and audit events. Tenant-local uniqueness and repository predicates prevent a
-global ID from becoming an authorization bypass. The migration backfills Phase 2 data into the
+global ID from becoming an authorization bypass. The migration backfills pre-identity data into the
 stable local workspace.
 
 ## Run lifecycle and durable execution

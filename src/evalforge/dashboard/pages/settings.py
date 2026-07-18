@@ -25,7 +25,7 @@ from evalforge.dashboard.state import configured_api_url, reconnect_client
 def render() -> None:
     page_header(
         "Settings",
-        "Review connection health, execution limits, and the published scoring contract.",
+        "Review your workspace and the model providers available for evaluations.",
         eyebrow="System",
     )
     _render_account_and_workspace()
@@ -34,6 +34,50 @@ def render() -> None:
     ready, ready_error = load_resource("readiness", api.health_ready)
     capabilities, capability_error = load_resource("capabilities", api.capabilities)
 
+    if live_error:
+        render_api_error(live_error, title="The API process is not reachable")
+    elif ready_error:
+        render_api_error(ready_error, title="The API is live but not ready")
+
+    if capability_error:
+        render_partial_state("Public provider, metric, and limit metadata is unavailable.")
+        safe_capabilities: dict[str, Any] = {}
+    elif not isinstance(capabilities, dict):
+        render_partial_state("The capabilities endpoint returned an unexpected payload.")
+        safe_capabilities = {}
+    else:
+        safe_capabilities = public_payload(capabilities)
+
+    if safe_capabilities:
+        _render_provider_capabilities(safe_capabilities)
+        _render_provider_safety(safe_capabilities)
+
+    with st.expander("Advanced system details", icon=":material/settings:"):
+        _render_backend_connection(
+            live=live,
+            live_error=live_error,
+            ready=ready,
+            ready_error=ready_error,
+        )
+        st.caption(
+            "Only API-published metadata appears here. Provider keys, database URLs, and "
+            "credentials are never requested or rendered."
+        )
+        if safe_capabilities:
+            _render_metric_versions(safe_capabilities)
+            _render_limits(safe_capabilities)
+            _render_executor_notes(safe_capabilities)
+            with st.expander("Published capability payload", icon=":material/data_object:"):
+                safe_json_panel("API-published metadata", safe_capabilities)
+
+
+def _render_backend_connection(
+    *,
+    live: Any,
+    live_error: Any,
+    ready: Any,
+    ready_error: Any,
+) -> None:
     st.subheader("Backend connection")
     st.caption("Configured API origin")
     st.code(configured_api_url(), language=None)
@@ -46,34 +90,6 @@ def render() -> None:
         if st.button("Reconnect", icon=":material/refresh:", width="stretch"):
             reconnect_client().clear_cache()
             st.rerun()
-
-    if live_error:
-        render_api_error(live_error, title="The API process is not reachable")
-    elif ready_error:
-        render_api_error(ready_error, title="The API is live but not ready")
-
-    st.info(
-        "Security boundary · This page shows only API-published capability metadata. "
-        "Provider keys, database URLs, and credentials are neither requested nor rendered.",
-        icon=":material/lock:",
-    )
-
-    if capability_error:
-        render_partial_state("Public provider, metric, and limit metadata is unavailable.")
-        return
-    if not isinstance(capabilities, dict):
-        render_partial_state("The capabilities endpoint returned an unexpected payload.")
-        return
-
-    safe_capabilities = public_payload(capabilities)
-    _render_provider_capabilities(safe_capabilities)
-    _render_provider_safety(safe_capabilities)
-    _render_metric_versions(safe_capabilities)
-    _render_limits(safe_capabilities)
-    _render_executor_notes(safe_capabilities)
-
-    with st.expander("Safe capability payload", icon=":material/data_object:"):
-        safe_json_panel("API-published metadata", safe_capabilities)
 
 
 def _render_provider_capabilities(capabilities: dict[str, Any]) -> None:

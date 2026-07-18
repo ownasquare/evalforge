@@ -1,0 +1,53 @@
+name: Feature request
+description: Propose a focused improvement to the evaluation workflow
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        EvalForge centers one workflow: test set -> candidates -> results. Explain the user problem
+        first so the simplest useful solution is easy to evaluate.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and documentation for this idea.
+          required: true
+        - label: This request does not include secrets or private evaluation data.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who is blocked, what are they trying to do, and why is the current path hard?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe success without prescribing a large interface or implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternative
+    attributes:
+      label: Current workaround
+      description: What do you do today, if anything?
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Test sets and cases
+        - Prompts and models
+        - Running evaluations
+        - Results and comparison
+        - Metrics
+        - Providers
+        - Exports
+        - Documentation or contributor experience
+        - Operations or shared workspaces
+    validations:
+      required: true

@@ -20,13 +20,13 @@ jobs:
           enable-cache: true
       - run: uv python install 3.11
       - run: uv sync --all-groups --frozen
-      - run: uv run alembic upgrade head
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run mypy src
-      - run: uv run bandit -q -c pyproject.toml -r src
-      - run: uv run pytest -q --disable-socket --allow-unix-socket --cov=evalforge --cov-branch --cov-report=term-missing --cov-report=xml
-      - run: uv run pip-audit
+      - run: uv run --all-groups alembic upgrade head
+      - run: uv run --all-groups ruff check .
+      - run: uv run --all-groups ruff format --check .
+      - run: uv run --all-groups mypy src
+      - run: uv run --all-groups bandit -q -c pyproject.toml -r src
+      - run: uv run --all-groups pytest -q --disable-socket --allow-unix-socket --cov=evalforge --cov-branch --cov-report=term-missing --cov-report=xml
+      - run: uv run --all-groups pip-audit
 
   containers:
     runs-on: ubuntu-latest
@@ -79,12 +79,12 @@ jobs:
           enable-cache: true
       - run: uv python install ${{ matrix.python-version }}
       - run: uv sync --python "${{ matrix.python-version }}" --all-groups --extra postgres --frozen
-      - run: uv run alembic upgrade head
-      - run: uv run alembic check
-      - run: uv run evalforge seed
-      - run: uv run evalforge doctor
-      - run: uv run ruff check tests/integration/test_postgresql.py
-      - run: uv run pytest -q tests/integration/test_postgresql.py tests/contract/test_project_contract.py tests/contract/test_compose_contract.py
+      - run: uv run --all-groups --extra postgres alembic upgrade head
+      - run: uv run --all-groups --extra postgres alembic check
+      - run: uv run --all-groups --extra postgres evalforge seed
+      - run: uv run --all-groups --extra postgres evalforge doctor
+      - run: uv run --all-groups --extra postgres ruff check tests/integration/test_postgresql.py
+      - run: uv run --all-groups --extra postgres pytest -q tests/integration/test_postgresql.py tests/contract/test_project_contract.py tests/contract/test_compose_contract.py
 
   e2e:
     runs-on: ubuntu-latest
@@ -97,12 +97,12 @@ jobs:
           enable-cache: true
       - run: uv python install 3.11
       - run: uv sync --all-groups --extra e2e --frozen
-      - run: uv run playwright install --with-deps chromium
-      - run: uv run evalforge seed
+      - run: uv run --all-groups --extra e2e playwright install --with-deps chromium
+      - run: uv run --all-groups --extra e2e evalforge seed
       - name: Run deterministic browser smoke
         run: |
-          uv run uvicorn evalforge.api.app:app --host 127.0.0.1 --port 8000 --workers 1 > /tmp/evalforge-api.log 2>&1 &
-          uv run streamlit run src/evalforge/streamlit_app.py --server.address 127.0.0.1 --server.port 8501 > /tmp/evalforge-ui.log 2>&1 &
-          uv run python scripts/wait_for_http.py http://127.0.0.1:8000/health/ready
-          uv run python scripts/wait_for_http.py http://127.0.0.1:8501/_stcore/health
-          uv run pytest -q -m e2e tests/e2e
+          uv run --all-groups --extra e2e uvicorn evalforge.api.app:app --host 127.0.0.1 --port 8000 --workers 1 > /tmp/evalforge-api.log 2>&1 &
+          uv run --all-groups --extra e2e streamlit run src/evalforge/streamlit_app.py --server.address 127.0.0.1 --server.port 8501 > /tmp/evalforge-ui.log 2>&1 &
+          uv run --all-groups --extra e2e python scripts/wait_for_http.py http://127.0.0.1:8000/health/ready
+          uv run --all-groups --extra e2e python scripts/wait_for_http.py http://127.0.0.1:8501/_stcore/health
+          uv run --all-groups --extra e2e pytest -q -m e2e tests/e2e

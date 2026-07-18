@@ -19,9 +19,10 @@ STREAMLIT_LAUNCHER = ROOT / "src/evalforge/streamlit_app.py"
 COLD_ROUTES = (
     ("/", "Evaluation workspace"),
     ("/evaluate", "New evaluation"),
-    ("/runs", "Runs"),
+    ("/runs", "Results"),
     ("/compare", "Compare"),
     ("/assets", "Benchmarks"),
+    ("/models", "Models"),
     ("/settings", "Settings"),
 )
 
@@ -137,17 +138,15 @@ def test_dashboard_runs_a_seeded_evaluation(page) -> None:
     expect(page.get_by_role("heading", name="Evaluation workspace")).to_be_visible(timeout=20_000)
     page.get_by_role("link", name="New evaluation", exact=False).click()
     expect(page.get_by_role("heading", name="New evaluation")).to_be_visible()
-    expect(page.get_by_text("API: Live", exact=True)).to_be_visible()
     page.get_by_role("textbox", name="Run name", exact=True).fill("E2E grounded answer review")
-    page.get_by_role("button", name="Check setup").click()
-    expect(page.get_by_text("Setup checked", exact=False)).to_be_visible()
+    expect(page.get_by_role("button", name="Check setup")).to_have_count(0)
     page.get_by_role("button", name="Start evaluation").click()
     expect(
         page.get_by_text("Evaluation completed. Results are ready to inspect.", exact=True)
     ).to_be_visible(timeout=20_000)
     expect(page.get_by_role("button", name="Review results")).to_be_visible()
     page.get_by_role("button", name="Review results").click()
-    expect(page.get_by_role("heading", name="Runs")).to_be_visible()
+    expect(page.get_by_role("heading", name="Results", exact=True)).to_be_visible()
     expect(page.get_by_text("E2E grounded answer review", exact=True)).to_be_visible()
 
 
@@ -181,7 +180,12 @@ def test_dashboard_warm_navigation_preserves_browser_history(page, cold_dashboar
 @pytest.mark.e2e
 @pytest.mark.parametrize(
     ("path", "heading"),
-    (("/", "Evaluation workspace"), ("/evaluate", "New evaluation")),
+    (
+        ("/", "Evaluation workspace"),
+        ("/evaluate", "New evaluation"),
+        ("/runs", "Results"),
+        ("/models", "Models"),
+    ),
 )
 def test_dashboard_cold_routes_fit_mobile_viewport(
     page, cold_dashboard_url: str, path: str, heading: str

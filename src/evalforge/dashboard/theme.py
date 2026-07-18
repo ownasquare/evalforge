@@ -117,6 +117,7 @@ p, label, [data-testid="stCaptionContainer"] {
 }
 
 .stButton > button[kind="primary"],
+button[data-testid="stBaseButton-primary"],
 .stDownloadButton > button[kind="primary"] {
   border: 1px solid var(--ef-accent);
   background: var(--ef-accent);
@@ -125,11 +126,13 @@ p, label, [data-testid="stCaptionContainer"] {
 }
 
 .stButton > button[kind="primary"] *,
+button[data-testid="stBaseButton-primary"] *,
 .stDownloadButton > button[kind="primary"] * {
   color: #FFFFFF !important;
 }
 
 .stButton > button[kind="primary"]:hover,
+button[data-testid="stBaseButton-primary"]:hover,
 .stDownloadButton > button[kind="primary"]:hover {
   border-color: var(--ef-accent-hover);
   background: var(--ef-accent-hover);

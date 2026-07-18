@@ -1,19 +1,33 @@
 # Operations
 
-## Local development
+## Local demo
 
 ```bash
-cp .env.example .env
-uv sync --all-groups
-uv run alembic upgrade head
-uv run evalforge seed
-make api
+uv sync --frozen
+uv run evalforge demo
 ```
 
-Start `make ui` in a second terminal. The native launchers load and validate all settings before
-binding; local identity mode is rejected if either service is configured beyond loopback.
-`evalforge doctor` checks configuration, migration state, database connectivity, provider
-capability, and execution limits without printing secrets.
+The demo command applies migrations, idempotently seeds the offline examples, starts the API and
+dashboard, waits for both services, and stops both on `Ctrl+C`. It is the recommended adopter path.
+No `.env` file or provider key is required.
+
+Contributors who need separate process logs can first install the development groups:
+
+```bash
+uv sync --frozen --all-groups
+```
+
+Then start these commands in separate terminals:
+
+```bash
+uv run evalforge api
+uv run evalforge ui
+```
+
+Run `uv run evalforge seed` first when working from an empty database. The package launchers load
+and validate settings before binding; local identity mode is rejected if either service is
+configured beyond loopback. `uv run evalforge doctor` checks configuration, migration state,
+database connectivity, provider capability, and execution limits without printing secrets.
 
 The deterministic local topology is:
 
@@ -44,7 +58,7 @@ schema path. JSON, CSV, and versioned run packages are portable evidence artifac
 backups: they do not contain complete identity, membership, audit, queue, or operational state.
 
 Revision `0003_identity_tenant_scope` adds identity, memberships, workspace scope, and audit history,
-then backfills existing Phase 2 data into the stable local workspace. Its downgrade refuses to
+then backfills existing pre-identity data into the stable local workspace. Its downgrade refuses to
 discard nonlocal identity or audit data and is regression-tested for an exact populated-`0002`
 round trip. Revision `0004_durable_execution_leases` adds persisted claim, lease, heartbeat, and
 attempt evidence. SQLite migration connections temporarily suspend foreign-key enforcement only
@@ -143,15 +157,43 @@ evidence is retained before scoring. Never automatically replay a billing-ambigu
 SHA-256-derived and labeled synthetic. No network call is made.
 
 The neutral `src/evalforge/streamlit_app.py` entry point keeps Streamlit's route registration
-separate from the implementation `dashboard/pages/` package. Direct cold bookmarks to Home, Runs,
-Compare, New evaluation, Benchmarks, and Settings are covered by Playwright.
+separate from the implementation `dashboard/pages/` package. Direct cold bookmarks to Home,
+Results, Compare, New evaluation, Benchmarks, Models, and Settings are covered by browser tests.
 
 ## Real-provider checklist
+
+### Connect your first provider locally
+
+Keep the offline demo working first, then make a private local settings file:
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` in your editor. For OpenAI Responses, set `EVALFORGE_OPENAI_API_KEY`, keep only the
+models you intend to use in `EVALFORGE_OPENAI_MODEL_ALLOWLIST`, and change
+`EVALFORGE_REAL_RUNS_ENABLED` to `true`. For an OpenAI-compatible endpoint, use the corresponding
+`EVALFORGE_COMPATIBLE_*` fields instead; a local gateway may use `auth_mode=none` and leave its key
+blank. The ignored `.env` file is loaded by the backend, while provider credentials are deliberately
+removed from the dashboard process.
+
+Verify the configuration without exposing the key, then launch normally:
+
+```bash
+uv run evalforge doctor
+uv run evalforge demo
+```
+
+In the dashboard, open **Models**, add an allowlisted model, then choose **New evaluation**. Review
+the preflight call count, token estimate, transfer disclosures, and spend ceiling before starting.
+Afterward, use **Results** to inspect case evidence and create a redacted export when you need to
+share the run. Never paste a provider key into the dashboard, a command, a URL, an export, or a
+support message.
 
 1. Keep external calls disabled while building and calibrating the benchmark.
 2. Review which input, output, reference, and context fields the adapter or judge transmits.
 3. Set backend credentials and model allowlists only through secret management.
-4. Choose the provider's explicit API mode; do not rely on fallback.
+4. Confirm the provider's server-published API mode; adapters must not rely on fallback.
 5. Set `EVALFORGE_REAL_RUNS_ENABLED=true` only in the intended environment.
 6. Review preflight call, token, known/unknown pricing, applicability, and estimated-cost evidence.
 7. Acknowledge external transfer, known cost, and unknown cost separately as applicable.
@@ -196,10 +238,9 @@ docker compose config
 
 The dashboard uses `EVALFORGE_PUBLIC_BASE_URL` as its HTTPS API origin; bearer tokens are never sent
 to the plaintext Compose service name. The shared identity environment also passes that URL to the
-API process so production OIDC validation cannot fall back to a loopback HTTP default. This phase
-proves both image builds, fail-closed startup
-contracts, and configuration validation. It does not claim a Compose runtime with a real IdP,
-hosted TLS, or production readback.
+API process so production OIDC validation cannot fall back to a loopback HTTP default. The
+automated contract covers both image builds, fail-closed startup contracts, and configuration
+validation. It does not claim a Compose runtime with a real IdP, hosted TLS, or production readback.
 
 ## Release and production boundary
 

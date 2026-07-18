@@ -37,6 +37,42 @@ def list_payload(value: Any) -> list[JsonObject]:
     return collection_items(value)
 
 
+def load_all_runs(
+    api: Any,
+    *,
+    page_size: int = 200,
+) -> tuple[list[JsonObject], int | None, ApiError | None]:
+    """Load complete run history so older evaluations remain selectable."""
+
+    try:
+        payload = api.runs(limit=page_size, page=1)
+    except ApiError as error:
+        return [], None, error
+    runs = list_payload(payload)
+    total_value = payload.get("total") if isinstance(payload, dict) else len(runs)
+    total = (
+        total_value
+        if isinstance(total_value, int) and not isinstance(total_value, bool) and total_value >= 0
+        else len(runs)
+    )
+    page = 2
+    while len(runs) < total:
+        try:
+            page_payload = api.runs(limit=page_size, page=page)
+        except ApiError as error:
+            return runs, total, error
+        page_runs = list_payload(page_payload)
+        if not page_runs:
+            return (
+                runs,
+                total,
+                ApiError("The API returned fewer runs than its pagination total"),
+            )
+        runs.extend(page_runs)
+        page += 1
+    return runs, total, None
+
+
 def option_map(items: list[JsonObject], *, fallback: str) -> dict[str, str]:
     options: dict[str, str] = {}
     for item in items:

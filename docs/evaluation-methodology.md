@@ -21,9 +21,9 @@ Every metric records:
 Not-applicable metrics have no numeric value. They are excluded from denominators rather than
 silently becoming zero.
 
-## Evaluator declarations
+## Optional evaluator declarations
 
-Every pluggable evaluator declares before execution:
+Every `AsyncEvaluator` implementation declares before execution:
 
 - stable name and version;
 - offline or external execution;
@@ -135,7 +135,8 @@ dashboard workflow, or CLI, and no human-reviewed calibration run has been compl
 - Prefer pairwise regression decisions and task-specific thresholds over one universal score.
 - Review changed or failed cases directly; an aggregate can hide a severe localized regression.
 - Version the dataset, prompts, metrics, judge rubric, model, and pricing together.
-- Add RAG-focused plugins only when cases contain retrieval context and the plugin version is stored.
+- Add RAG-focused source extensions only when cases contain retrieval context and the evaluator
+  version is stored.
 
 Optional LLM-as-judge evaluation should be treated as a separate provider-backed metric with its
 judge model, API mode, rubric bytes/hash, structured schema, and calibration version persisted. It

@@ -48,6 +48,9 @@ postgres = ["psycopg[binary]>=3.2,<4"]
 [project.scripts]
 evalforge = "evalforge.cli:app"
 
+[tool.uv]
+default-groups = []
+
 [dependency-groups]
 dev = [
   "bandit>=1.8,<2",

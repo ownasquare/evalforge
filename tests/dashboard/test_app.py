@@ -30,6 +30,26 @@ initialize_state()
 render()
 """
 
+DATASET_CREATE_SOURCE = """
+import streamlit as st
+from evalforge.dashboard.pages.test_cases import _render_datasets
+from evalforge.dashboard.state import initialize_state
+
+st.set_page_config(page_title="EvalForge dataset form test", layout="wide")
+initialize_state()
+_render_datasets([], editable=True)
+"""
+
+PROMPT_CREATE_SOURCE = """
+import streamlit as st
+from evalforge.dashboard.pages.test_cases import _render_prompts
+from evalforge.dashboard.state import initialize_state
+
+st.set_page_config(page_title="EvalForge prompt form test", layout="wide")
+initialize_state()
+_render_prompts([], editable=True)
+"""
+
 VIEWER_RUN_PAGE_SOURCE = """
 import streamlit as st
 from evalforge.dashboard.auth import WorkspaceOption
@@ -83,6 +103,38 @@ def test_overview_has_deterministic_demo_recovery_copy(monkeypatch) -> None:
 
     messages = [str(element.value) for element in [*app.info, *app.caption, *app.subheader]]
     assert any("deterministic demo" in message.lower() for message in messages)
+
+
+def test_empty_overview_focuses_on_the_three_step_first_run(monkeypatch) -> None:
+    routes: dict[str, Any] = {
+        "/health/live": {"status": "healthy"},
+        "/api/v1/overview": {
+            "totals": {
+                "runs": 0,
+                "completed_runs": 0,
+                "results": 0,
+                "evaluated_results": 0,
+                "mean_quality": None,
+            },
+            "recent_runs": [],
+        },
+        "/api/v1/capabilities": {"demo_available": True, "real_runs_enabled": False},
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes, []))
+    app = AppTest.from_file(str(APP_PATH), default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    assert [subheader.value for subheader in app.subheader].count(
+        "Start your first comparison"
+    ) == 1
+    visible = [str(element.value) for element in [*app.markdown, *app.caption]]
+    assert any("Choose a benchmark" in value for value in visible)
+    assert any("Pick candidates" in value for value in visible)
+    assert any("Review results" in value for value in visible)
+    assert not app.metric
+    assert [button.label for button in app.button].count("New evaluation") == 1
 
 
 def test_overview_renders_populated_api_summary(monkeypatch) -> None:
@@ -220,12 +272,8 @@ def test_run_page_submits_confirmed_demo_matrix(monkeypatch) -> None:
     run_name.set_value("Grounded support answers — July 18").run()
     assert not app.checkbox
     buttons = {button.label: button for button in app.button}
-    preflight = buttons["Check setup"]
-    preflight.click().run()
-    buttons = {button.label: button for button in app.button}
-    submit = buttons["Start evaluation"]
-
-    submit.click().run()
+    assert "Check setup" not in buttons
+    buttons["Start evaluation"].click().run()
 
     assert not app.exception
     assert submitted == [
@@ -246,6 +294,201 @@ def test_run_page_submits_confirmed_demo_matrix(monkeypatch) -> None:
     assert "_evalforge_run_preflight" not in app.session_state
     assert app.session_state["selected_run_id"] == "run-1"
     assert app.session_state["active_run_id"] is None
+
+
+def test_run_page_routes_an_all_paused_model_state_to_models(monkeypatch) -> None:
+    routes: dict[str, Any] = {
+        "/api/v1/datasets": {"items": [{"id": "dataset-1", "name": "Support QA"}]},
+        "/api/v1/prompts": {"items": [{"id": "prompt-1", "name": "Helpful"}]},
+        "/api/v1/models": {
+            "items": [
+                {
+                    "id": "model-paused",
+                    "name": "Paused profile",
+                    "enabled": False,
+                    "provider": "deterministic",
+                    "api_mode": "deterministic",
+                }
+            ]
+        },
+        "/api/v1/capabilities": {"demo_available": True, "real_runs_enabled": False},
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes, []))
+    app = AppTest.from_string(RUN_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    labels = {button.label for button in app.button}
+    assert "Open models" in labels
+    assert "Open benchmarks" not in labels
+    visible = [str(element.value) for element in [*app.subheader, *app.caption]]
+    assert any("available model" in value.lower() for value in visible)
+
+
+def test_run_page_routes_missing_benchmark_resources_to_benchmarks(monkeypatch) -> None:
+    routes: dict[str, Any] = {
+        "/api/v1/datasets": {"items": []},
+        "/api/v1/prompts": {"items": [{"id": "prompt-1", "name": "Helpful"}]},
+        "/api/v1/models": {
+            "items": [
+                {
+                    "id": "model-1",
+                    "name": "Deterministic balanced",
+                    "provider": "deterministic",
+                    "api_mode": "deterministic",
+                }
+            ]
+        },
+        "/api/v1/capabilities": {"demo_available": True, "real_runs_enabled": False},
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes, []))
+    app = AppTest.from_string(RUN_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    labels = {button.label for button in app.button}
+    assert "Open benchmarks" in labels
+    assert "Open models" not in labels
+
+
+def test_run_page_blocks_an_invalid_scoring_policy(monkeypatch) -> None:
+    routes: dict[str, Any] = {
+        "/api/v1/datasets": {"items": [{"id": "dataset-1", "name": "Support QA"}]},
+        "/api/v1/datasets/dataset-1": {
+            "id": "dataset-1",
+            "name": "Support QA",
+            "cases": [{"id": "case-1", "external_id": "refund"}],
+        },
+        "/api/v1/prompts": {"items": [{"id": "prompt-1", "name": "Helpful"}]},
+        "/api/v1/models": {
+            "items": [
+                {
+                    "id": "model-1",
+                    "name": "Deterministic balanced",
+                    "provider": "deterministic",
+                    "api_mode": "deterministic",
+                }
+            ]
+        },
+        "/api/v1/capabilities": {
+            "demo_available": True,
+            "real_runs_enabled": False,
+            "metrics": [
+                {
+                    "name": "correctness",
+                    "version": "correctness-v1",
+                    "direction": "higher_is_better",
+                    "weight": 1.0,
+                    "threshold": 0.7,
+                    "enabled": False,
+                }
+            ],
+        },
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes, []))
+    app = AppTest.from_string(RUN_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    assert any("at least one scoring check" in str(item.value).lower() for item in app.warning)
+    assert {button.label: button for button in app.button}["Start evaluation"].disabled is True
+
+
+def test_run_page_submits_explicit_baseline_and_scoring_policy(monkeypatch) -> None:
+    submitted: list[dict[str, Any]] = []
+    routes: dict[str, Any] = {
+        "/api/v1/datasets": {"items": [{"id": "dataset-1", "name": "Support QA"}]},
+        "/api/v1/datasets/dataset-1": {
+            "id": "dataset-1",
+            "name": "Support QA",
+            "cases": [{"id": "case-1", "external_id": "refund"}],
+        },
+        "/api/v1/prompts": {
+            "items": [
+                {"id": "prompt-1", "name": "Current"},
+                {"id": "prompt-2", "name": "Challenger"},
+            ]
+        },
+        "/api/v1/models": {
+            "items": [
+                {
+                    "id": "model-1",
+                    "name": "Balanced",
+                    "provider": "deterministic",
+                    "api_mode": "deterministic",
+                },
+                {
+                    "id": "model-2",
+                    "name": "Concise",
+                    "provider": "deterministic",
+                    "api_mode": "deterministic",
+                },
+            ]
+        },
+        "/api/v1/capabilities": {
+            "demo_available": True,
+            "real_runs_enabled": False,
+            "limits": {"max_calls_per_run": 100},
+            "metrics": [
+                {
+                    "name": "correctness",
+                    "version": "correctness-v1",
+                    "direction": "higher_is_better",
+                    "weight": 1.0,
+                    "threshold": 0.7,
+                    "enabled": True,
+                },
+                {
+                    "name": "hallucination_risk",
+                    "version": "hallucination-v1",
+                    "direction": "lower_is_better",
+                    "weight": 1.0,
+                    "threshold": 0.25,
+                    "enabled": True,
+                },
+            ],
+        },
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes, submitted))
+    app = AppTest.from_string(RUN_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+    {field.label: field for field in app.multiselect}["Prompt versions"].set_value(
+        ["prompt-1", "prompt-2"]
+    ).run()
+    selectboxes = {field.label: field for field in app.selectbox}
+    selectboxes["Baseline prompt"].set_value("prompt-2").run()
+    selectboxes = {field.label: field for field in app.selectbox}
+    selectboxes["Baseline model"].set_value("model-2").run()
+    {field.label: field for field in app.text_input}["Run name"].set_value(
+        "Explicit policy review"
+    ).run()
+    {button.label: button for button in app.button}["Start evaluation"].click().run()
+
+    assert not app.exception
+    assert submitted[0]["prompt_ids"] == ["prompt-2", "prompt-1"]
+    assert submitted[0]["model_ids"] == ["model-2", "model-1"]
+    assert submitted[0]["metrics"] == [
+        {
+            "name": "correctness",
+            "version": "correctness-v1",
+            "direction": "higher_is_better",
+            "weight": 1.0,
+            "threshold": 0.7,
+            "enabled": True,
+        },
+        {
+            "name": "hallucination_risk",
+            "version": "hallucination-v1",
+            "direction": "lower_is_better",
+            "weight": 1.0,
+            "threshold": 0.25,
+            "enabled": True,
+        },
+    ]
 
 
 def test_real_run_requires_separate_unknown_pricing_acknowledgment(monkeypatch) -> None:
@@ -329,7 +572,7 @@ def test_real_run_requires_separate_unknown_pricing_acknowledgment(monkeypatch) 
     buttons = {button.label: button for button in app.button}
     assert buttons["Start evaluation"].disabled is True
     metrics = {metric.label: metric.value for metric in app.metric}
-    assert metrics["Padded UTF-8 input guard"] == "4,096"
+    assert metrics["Estimated input size"] == "4,096"
     assert metrics["Partial known-cost estimate"] == "$0.0125"
     visible_text = [str(element.value) for element in [*app.warning, *app.text, *app.caption]]
     assert any("Unpriced Partner Model" in value for value in visible_text)
@@ -411,7 +654,7 @@ def test_real_run_with_complete_pricing_needs_only_general_cost_ack(monkeypatch)
     assert metrics["Known-cost estimate"] == "$0.0250"
 
 
-def test_run_page_invalidates_preflight_when_name_changes(monkeypatch) -> None:
+def test_demo_run_uses_current_name_in_single_submit(monkeypatch) -> None:
     preflight_payloads: list[dict[str, Any]] = []
     routes: dict[str, Any] = {
         "/api/v1/datasets": {"items": [{"id": "dataset-1", "name": "Support QA"}]},
@@ -447,17 +690,17 @@ def test_run_page_invalidates_preflight_when_name_changes(monkeypatch) -> None:
     app.run()
     name_field = {field.label: field for field in app.text_input}["Run name"]
     name_field.set_value("First review name").run()
-    {button.label: button for button in app.button}["Check setup"].click().run()
-    assert {button.label: button for button in app.button}["Start evaluation"].disabled is False
-
     {field.label: field for field in app.text_input}["Run name"].set_value(
         "Changed review name"
     ).run()
+    buttons = {button.label: button for button in app.button}
+    assert "Check setup" not in buttons
+    assert buttons["Start evaluation"].disabled is False
+    buttons["Start evaluation"].click().run()
 
-    assert {button.label: button for button in app.button}["Start evaluation"].disabled is True
     assert preflight_payloads == [
         {
-            "name": "First review name",
+            "name": "Changed review name",
             "dataset_id": "dataset-1",
             "prompt_ids": ["prompt-1"],
             "model_ids": ["model-1"],
@@ -508,6 +751,70 @@ def test_asset_page_uses_truthful_mutation_and_hash_copy(monkeypatch) -> None:
     code_values = [str(element.value) for element in app.code]
     assert any("template_hash" in value for value in code_values)
     assert not any("content_hash" in value for value in code_values)
+
+
+def test_invalid_case_criteria_keeps_the_authors_form_values(monkeypatch) -> None:
+    routes: dict[str, Any] = {
+        "/api/v1/datasets": {"items": [{"id": "dataset-1", "name": "Support QA"}]},
+        "/api/v1/datasets/dataset-1": {
+            "id": "dataset-1",
+            "name": "Support QA",
+            "cases": [],
+        },
+        "/api/v1/prompts": {"items": []},
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes, []))
+    app = AppTest.from_string(ASSET_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+    {field.label: field for field in app.text_input}["Case name"].set_value("Refund policy").run()
+    {field.label: field for field in app.text_area}["Input"].set_value(
+        "Can I request a refund?"
+    ).run()
+    {field.label: field for field in app.text_area}["JSON Schema (optional)"].set_value("{").run()
+    {button.label: button for button in app.button}["Add test case"].click().run()
+
+    assert not app.exception
+    assert any("JSON Schema must be valid JSON" in str(message.value) for message in app.warning)
+    assert {field.label: field.value for field in app.text_input}["Case name"] == "Refund policy"
+    assert {field.label: field.value for field in app.text_area}["Input"] == (
+        "Can I request a refund?"
+    )
+
+
+def test_invalid_dataset_keeps_the_authors_description_draft() -> None:
+    app = AppTest.from_string(DATASET_CREATE_SOURCE, default_timeout=15)
+
+    app.run()
+    {field.label: field for field in app.text_area}["Description"].set_value(
+        "A detailed release benchmark draft."
+    ).run()
+    {button.label: button for button in app.button}["Create dataset"].click().run()
+
+    assert not app.exception
+    assert any("Dataset name is required" in str(message.value) for message in app.warning)
+    assert {field.label: field.value for field in app.text_area}["Description"] == (
+        "A detailed release benchmark draft."
+    )
+
+
+def test_invalid_prompt_keeps_the_authors_template_draft() -> None:
+    app = AppTest.from_string(PROMPT_CREATE_SOURCE, default_timeout=15)
+
+    app.run()
+    {field.label: field for field in app.text_area}["System template"].set_value(
+        "Answer only from the supplied context."
+    ).run()
+    {button.label: button for button in app.button}["Create prompt"].click().run()
+
+    assert not app.exception
+    assert any(
+        "Prompt name and user template are required" in str(message.value)
+        for message in app.warning
+    )
+    assert {field.label: field.value for field in app.text_area}["System template"] == (
+        "Answer only from the supplied context."
+    )
 
 
 def test_viewer_deep_link_keeps_evaluation_builder_read_only() -> None:

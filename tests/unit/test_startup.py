@@ -99,6 +99,48 @@ def test_dashboard_launcher_uses_the_validated_bind_settings(
     assert f"--secrets.files={auth_file}" in arguments
 
 
+def test_dashboard_launcher_drops_provider_secrets_and_cached_settings(
+    database_url: str, monkeypatch: Any, tmp_path: Path
+) -> None:
+    settings = _container_settings(database_url)
+    auth_file = _write_streamlit_auth_config(tmp_path / "streamlit-auth.toml")
+    cache_clear_count = 0
+    observed_secrets: dict[str, str | None] = {}
+
+    class SettingsLoader:
+        def __call__(self) -> Settings:
+            return settings
+
+        def cache_clear(self) -> None:
+            nonlocal cache_clear_count
+            cache_clear_count += 1
+
+    monkeypatch.setenv("EVALFORGE_STREAMLIT_AUTH_FILE", str(auth_file))
+    monkeypatch.setenv("EVALFORGE_OPENAI_API_KEY", "backend-only-openai")
+    monkeypatch.setenv("EVALFORGE_COMPATIBLE_API_KEY", "backend-only-compatible")
+    monkeypatch.setattr(start_dashboard, "get_settings", SettingsLoader())
+    monkeypatch.setattr(
+        start_dashboard.streamlit_cli,
+        "main",
+        lambda **options: observed_secrets.update(
+            {
+                "openai": start_dashboard.os.environ.get("EVALFORGE_OPENAI_API_KEY"),
+                "compatible": start_dashboard.os.environ.get("EVALFORGE_COMPATIBLE_API_KEY"),
+            }
+        ),
+    )
+
+    start_dashboard.main()
+
+    assert cache_clear_count == 2
+    assert observed_secrets["openai"] is not None
+    assert observed_secrets["compatible"] is not None
+    assert observed_secrets["openai"].strip() == ""
+    assert observed_secrets["compatible"].strip() == ""
+    assert start_dashboard.os.environ["EVALFORGE_OPENAI_API_KEY"] == "backend-only-openai"
+    assert start_dashboard.os.environ["EVALFORGE_COMPATIBLE_API_KEY"] == "backend-only-compatible"
+
+
 def test_dashboard_launcher_fails_closed_without_mounted_oidc_auth(
     database_url: str, monkeypatch: Any
 ) -> None:

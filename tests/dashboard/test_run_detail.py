@@ -6,12 +6,17 @@ import httpx
 from streamlit.testing.v1 import AppTest
 
 from evalforge.dashboard.client import ApiClient, ApiError
+from evalforge.dashboard.pages.common import load_all_runs
 from evalforge.dashboard.pages.run_detail import (
     _candidate_labels,
     _candidate_options,
     _case_identity,
+    _has_target_miss,
     _load_all_results,
     _metric_scorecard_rows,
+    _needs_attention,
+    _result_conclusion,
+    _result_page,
 )
 
 RUN_DETAIL_PAGE_SOURCE = """
@@ -49,6 +54,20 @@ class _PaginatedResultsApi:
         }
 
 
+class _PaginatedRunsApi:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int]] = []
+
+    def runs(self, *, limit: int, page: int) -> dict[str, Any]:
+        self.calls.append((page, limit))
+        start = (page - 1) * limit
+        count = max(0, min(limit, 401 - start))
+        return {
+            "items": [{"id": f"run-{start + index}"} for index in range(count)],
+            "total": 401,
+        }
+
+
 def test_load_all_results_follows_api_pagination_total() -> None:
     api = _PaginatedResultsApi()
 
@@ -60,6 +79,18 @@ def test_load_all_results_follows_api_pagination_total() -> None:
     assert api.calls == [(1, 500), (2, 500), (3, 500)]
 
 
+def test_load_all_runs_keeps_older_history_selectable() -> None:
+    api = _PaginatedRunsApi()
+
+    runs, total, error = load_all_runs(api)
+
+    assert error is None
+    assert total == 401
+    assert len(runs) == 401
+    assert runs[-1]["id"] == "run-400"
+    assert api.calls == [(1, 200), (2, 200), (3, 200)]
+
+
 def test_load_all_results_reports_partial_page_failure() -> None:
     api = _PaginatedResultsApi(fail_page=3)
 
@@ -68,6 +99,65 @@ def test_load_all_results_reports_partial_page_failure() -> None:
     assert isinstance(error, ApiError)
     assert total == 1_001
     assert len(results) == 1_000
+
+
+def test_result_evidence_pagination_keeps_later_cases_reachable() -> None:
+    results = [{"id": f"result-{index}"} for index in range(121)]
+
+    page, first_position, last_position = _result_page(results, 3)
+
+    assert [result["id"] for result in page] == [f"result-{index}" for index in range(100, 121)]
+    assert (first_position, last_position) == (101, 121)
+
+
+def test_result_evidence_pagination_clamps_stale_page_state() -> None:
+    results = [{"id": f"result-{index}"} for index in range(7)]
+
+    page, first_position, last_position = _result_page(results, 99)
+
+    assert page == results
+    assert (first_position, last_position) == (1, 7)
+
+
+def test_needs_attention_includes_target_misses_and_execution_errors() -> None:
+    assert _needs_attention({"status": "completed", "aggregate_passed": False}) is True
+    assert (
+        _needs_attention(
+            {
+                "status": "completed",
+                "aggregate_passed": True,
+                "metric_results": {"correctness": {"passed": False, "applicability": "applicable"}},
+            }
+        )
+        is True
+    )
+    assert (
+        _needs_attention(
+            {
+                "status": "completed",
+                "aggregate_passed": True,
+                "metric_results": {"correctness": {"passed": None, "status": "error"}},
+            }
+        )
+        is True
+    )
+    assert _needs_attention({"status": "error", "aggregate_passed": None}) is True
+    assert _needs_attention({"status": "completed", "error_message": "timeout"}) is True
+    assert _needs_attention({"status": "completed", "aggregate_passed": True}) is False
+
+
+def test_target_miss_ignores_intentionally_non_applicable_metrics() -> None:
+    result = {
+        "aggregate_passed": True,
+        "metric_results": {
+            "groundedness": {
+                "passed": None,
+                "applicability": "not_applicable",
+            }
+        },
+    }
+
+    assert _has_target_miss(result) is False
 
 
 def test_candidate_ids_join_to_immutable_run_candidate_labels() -> None:
@@ -179,6 +269,46 @@ def test_metric_scorecard_keeps_direction_target_and_applicable_denominator() ->
     ]
 
 
+def test_completed_multi_candidate_run_is_ready_for_comparison() -> None:
+    run = {
+        "id": "run-1",
+        "status": "completed",
+        "candidates": [
+            {"id": "candidate-1", "label": "Baseline"},
+            {"id": "candidate-2", "label": "Challenger"},
+        ],
+    }
+
+    conclusion = _result_conclusion(run, [{"aggregate_passed": True}])
+
+    assert conclusion == (
+        "success",
+        "Ready to compare candidates",
+        "The evaluation finished. Compare the candidates on the same cases before choosing one.",
+    )
+
+
+def test_completed_run_warns_when_a_metric_misses_despite_passing_aggregate() -> None:
+    run = {"id": "run-1", "status": "completed", "candidates": []}
+    results = [
+        {
+            "aggregate_passed": True,
+            "metric_results": {
+                "hallucination_risk": {
+                    "passed": False,
+                    "applicability": "applicable",
+                }
+            },
+        }
+    ]
+
+    assert _result_conclusion(run, results) == (
+        "warning",
+        "Review target misses",
+        "1 scored result missed at least one target. Review those cases before deciding.",
+    )
+
+
 def test_render_shows_directional_scorecard(
     monkeypatch,
 ) -> None:
@@ -258,6 +388,60 @@ def test_render_shows_directional_scorecard(
     scorecard = app.dataframe[0].value.to_dict(orient="records")
     assert scorecard[1]["Direction"] == "Lower is better"
     assert scorecard[1]["Target"] == "at most 0.200"
+
+
+def test_render_explains_completed_result_and_preserves_run_for_compare(monkeypatch) -> None:
+    routes: dict[str, Any] = {
+        "/api/v1/runs": {
+            "items": [
+                {
+                    "id": "run-compare",
+                    "name": "Release choice",
+                    "status": "completed",
+                    "created_at": "2026-07-18T20:00:00Z",
+                }
+            ]
+        },
+        "/api/v1/runs/run-compare": {
+            "id": "run-compare",
+            "name": "Release choice",
+            "status": "completed",
+            "completed_items": 2,
+            "total_items": 2,
+            "candidates": [
+                {"id": "baseline", "label": "Baseline"},
+                {"id": "challenger", "label": "Challenger"},
+            ],
+        },
+        "/api/v1/runs/run-compare/results": {
+            "items": [
+                {
+                    "id": "result-1",
+                    "run_candidate_id": "baseline",
+                    "status": "completed",
+                    "aggregate_passed": True,
+                },
+                {
+                    "id": "result-2",
+                    "run_candidate_id": "challenger",
+                    "status": "completed",
+                    "aggregate_passed": True,
+                },
+            ],
+            "total": 2,
+        },
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes))
+    app = AppTest.from_string(RUN_DETAIL_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    assert any("Ready to compare candidates" in str(element.value) for element in app.success)
+    compare = {button.label: button for button in app.button}["Compare candidates"]
+    compare.click().run()
+    assert not app.exception
+    assert app.session_state["selected_run_id"] == "run-compare"
 
     export_selector = next(
         element for element in app.selectbox if element.label == "Export contents"

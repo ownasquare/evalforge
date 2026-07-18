@@ -86,3 +86,5 @@ def test_visual_tokens_use_a_neutral_solid_interface_system() -> None:
     assert TOKENS["accent"] == "#255F7A"
     assert "gradient" not in _STATIC_CSS
     assert "#6558F5" not in _STATIC_CSS
+    assert 'button[data-testid="stBaseButton-primary"] *' in _STATIC_CSS
+    assert "color: #FFFFFF !important;" in _STATIC_CSS
