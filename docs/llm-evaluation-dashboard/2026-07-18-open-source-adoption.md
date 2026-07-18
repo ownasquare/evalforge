@@ -17,6 +17,7 @@ proof in the environment where the project will be deployed.
 - Public repository: [ownasquare/evalforge](https://github.com/ownasquare/evalforge)
 - Default branch: `main`
 - Initial published release commit: `04a9d669644cf97b7a1835f4097c90abff49172b`
+- Hosted-verified product commit: `f3e490110d5598e1761eaf6de87144edcfce3cb6`
 - Repository visibility: public, with Issues enabled and the Wiki disabled
 - Security intake: GitHub private vulnerability reporting enabled
 - Repository topics: `ai-evaluation`, `fastapi`, `llm`, `llm-evaluation`,
@@ -63,10 +64,12 @@ workflow.
   configured, and 14 separately marked browser/live tests were deselected by the default suite.
 - Branch coverage: 84.22%, above the configured 80% threshold.
 - Static checks: Ruff, formatting, mypy, Bandit, and dependency vulnerability audit passed.
-- Hosted publication checks: PostgreSQL 3.11 and 3.12, Playwright E2E, and both container builds
-  passed on the initial published commit. The quality job exposed terminal-rendering-sensitive CLI
-  assertions; the follow-up normalizes styled and wrapped output and passes the exact hosted-style
-  command locally.
+- Hosted publication checks: the follow-up
+  [GitHub Actions run](https://github.com/ownasquare/evalforge/actions/runs/29664399429) passed every
+  job at commit `f3e490110d5598e1761eaf6de87144edcfce3cb6`: PostgreSQL 3.11 and 3.12,
+  Playwright E2E, both container builds, Ruff, formatting, mypy, Bandit, the full test and coverage
+  command, and the dependency audit. The first hosted run exposed terminal-rendering-sensitive CLI
+  assertions; the follow-up strips styling and normalizes wrapping before asserting output.
 - Browser acceptance: 13 of 13 Playwright end-to-end checks passed through the real
   Streamlit-to-FastAPI boundary.
 - Rendered layout: no horizontal overflow at 1280 px or 390 px; a fresh browser tab produced no
