@@ -5,352 +5,267 @@ alwaysApply: false
 
 # INVENTORY NEXT ITEMS
 
-The Phase 3 closeout covered identity, tenant scope, roles, audit events, OIDC verification,
-dashboard sessions, cold routes, provider transfer/cost controls, strict redacted exports,
-database-backed leases, PostgreSQL 17, migrations, container startup, desktop/mobile rendering,
-full regression, and final adversarial review. No known P0 or P1 defect remains in the completed
-local scope. The items below are externally gated deployment, calibration, publication, and
-production-governance layers.
+Phase 3 is complete for the authorized local scope. Identity, tenant isolation, roles, audit events,
+OIDC verification, durable leases, PostgreSQL 17, migrations, provider safeguards, versioned exports,
+container startup, desktop/mobile rendering, and full regression all have current local proof. No
+known P0 or P1 defect remains in that scope. The inventory below contains externally gated work and
+must not be flattened into the completed local claim.
 
 ## P2 - Prove hosted OIDC, TLS, and role journeys before shared exposure
 
-- **Who:** EvalForge deployment, identity, API, and dashboard owner.
-- **What:** Select a hosted environment and identity provider, configure TLS ingress and secrets,
-  then prove login, logout, token renewal/expiry, workspace selection, role denial, and revocation.
-- **How discovered:** The local source and Compose process-health proof uses signed fixtures and a
-  nonsecret OAuth configuration; it deliberately does not perform a real IdP or hosted TLS journey.
-- **Where:** `compose.yaml`, `scripts/start_api.py`, `scripts/start_dashboard.py`,
-  `src/evalforge/security/`, `src/evalforge/dashboard/auth.py`, ingress configuration, and the
-  selected identity-provider application.
-- **When:** Before any shared or publicly reachable deployment accepts user benchmarks.
-- **Detailed description:** Backend OIDC validation and Streamlit OAuth login are separate contracts.
-  The deployment must mount a non-committed Streamlit auth TOML, route dashboard API calls through
-  HTTPS, allow the exact public API host, restrict readiness/metrics, and provision memberships by
-  exact issuer and subject. Local signed-token tests do not prove provider metadata, redirect,
-  cookie, session expiry, ingress headers, or revocation behavior in the chosen environment.
-- **Acceptance criteria:** Valid hosted login reaches the assigned workspace; no/expired/wrong-
-  audience tokens fail; cross-workspace and insufficient-role actions fail; revoked users lose
-  access; callback and API traffic are HTTPS; `/metrics` and `/health/ready` are internal; no token
-  appears in URLs, logs, screenshots, or persistence.
-- **Definition of done:** Retain hosted route, deployment revision, IdP application identifier,
-  authenticated Browser/Playwright evidence, ingress/security-header readback, and cleanup/rollback
-  instructions without storing credentials.
-- **Reason the issue exists:** Credentials, hostname, IdP tenant, and deployment authority were not
-  supplied and cannot be safely invented locally.
-- **Priority:** P2.
-- **Why this priority:** Local correctness is complete, but this is the hard gate for shared use.
-- **How to prevent regressions:** Hosted identity smoke tests, denial-first fixtures, issuer-exact
-  provisioning, secret scanning, callback allowlists, and ingress policy tests.
-- **How to test:** Browser plugin first, then Playwright for login/logout/role/deep-link flows;
-  authenticated API readback; ingress probes for TLS, trusted hosts, readiness, and metrics.
-- **Audit policies:** Identity-context regression, route/API contract mapping, state-readback
-  persistence, validation-proof selection, and deployment-hazard review.
-- **Other considerations:** Decide session lifetime, emergency revocation, break-glass ownership,
-  credential rotation, and whether provider keys remain deployment-wide or become tenant-specific.
+- **Who:** Deployment, identity, API, and dashboard owner.
+- **What:** Select a host and IdP, configure TLS and secrets, then prove login, logout, token expiry,
+  workspace selection, role denial, and revocation.
+- **Acceptance:** Authenticated Browser/Playwright journeys for each role; exact issuer/audience
+  denial; HTTPS callback and API traffic; internal-only readiness/metrics; no token in URLs, logs,
+  screenshots, or persistence.
+- **Gate:** No hostname, IdP tenant, credentials, or deployment authority was supplied.
 
 ## P2 - Run an explicitly authorized provider and human calibration study
 
-- **Who:** Evaluation methodology owner, security/privacy owner, and budget approver.
-- **What:** Register one provider or judge implementation, approve its transferred fields and spend,
-  run a bounded benchmark, and compare selected thresholds with human labels.
-- **How discovered:** Evaluator declarations, calibration primitives, consent gates, and the guarded
-  live test are implemented, but the live test stops before credentials because no judge is
-  registered.
-- **Where:** `src/evalforge/evaluation/evaluators/`, `calibration.py`, provider adapters, run
-  preflight, `tests/live/`, and a future immutable calibration artifact.
-- **When:** Before heuristic or judge scores become release gates or external validity is claimed.
-- **Detailed description:** The study must preserve provider/model/API mode, rubric bytes/hash,
-  schema, evaluator version, exact benchmark hash, transferred fields, request IDs, usage, cost,
-  errors, reviewer protocol, sample selection, and threshold results. It must not pass references
-  into candidate prompts or weaken offline operation.
-- **Acceptance criteria:** Explicit provider/model allowlists; separate transfer/cost/unknown-cost
-  acknowledgments; user and server spend ceilings; zero hidden retries; versioned results; human
-  confusion matrix and agreement evidence; sanitized failures; no secrets in artifacts.
-- **Definition of done:** A bounded authorized live record and human-reviewed calibration report are
-  committed as documentation, with exact proof boundary and a deliberate go/no-go decision.
-- **Reason the issue exists:** Paid calls and external data transfer need credentials, budget, model,
-  benchmark, and privacy authority that were not provided.
-- **Priority:** P2 before production score gating; P3 for exploratory provider comparison.
-- **Why this priority:** The product is operationally strong, but heuristic accuracy cannot be
-  promoted to production truth without calibration.
-- **How to prevent regressions:** Marked live tests, benchmark hashes, evaluator declarations,
-  immutable rubric/version metadata, spend caps, one-attempt provider calls, and offline default CI.
-- **How to test:** Mocked contracts first; one explicitly approved live run; independent human
-  review; compare precision, recall, F1, disagreement cases, and deployment-shift risks.
-- **Audit policies:** Security/privacy, cost safety, evaluation methodology, state persistence, and
-  proof-layer separation.
-- **Other considerations:** Unknown pricing remains unknown; a local spend ceiling is not a provider
-  billing limit; database leases cannot promise exactly-once external billing.
+- **Who:** Evaluation-methodology, privacy/security, and budget owners.
+- **What:** Approve one provider/model, transferred fields, and spend ceiling; run a bounded study;
+  compare the selected thresholds with independently reviewed human labels.
+- **Acceptance:** Immutable benchmark/rubric/model hashes, request IDs, usage/cost evidence,
+  zero-hidden-retry proof, confusion matrix, precision/recall/F1, disagreement review, and a written
+  go/no-go decision.
+- **Gate:** No credentials, model, benchmark transfer approval, budget, or human-review protocol was
+  supplied. Unknown pricing remains unknown and exactly-once provider billing is not claimed.
 
 ## P3 - Publish to a selected remote and retain external CI evidence
 
 - **Who:** Repository and CI owner.
-- **What:** Add a user-selected private/public remote, push the local commits, run the full GitHub
-  Actions matrix, and retain immutable run links and commit SHA.
-- **How discovered:** `.github/workflows/ci.yml` includes Python 3.11/3.12, PostgreSQL 17, security,
-  coverage, package, and Playwright jobs, but the repository has no remote.
-- **Where:** Git remote configuration, branch protection, `.github/workflows/ci.yml`, and the
-  selected hosting organization.
-- **When:** After the user selects a destination and before claiming external CI or publication.
-- **Detailed description:** Local proof cannot establish hosted runner networking, service startup,
-  browser dependencies, cache behavior, or protected-branch enforcement. Publication must not
-  silently create a destination or expose proprietary benchmarks.
-- **Acceptance criteria:** Every required job is green for the exact implementation commit; the
-  PostgreSQL job reaches head and runs all three integration tests; Playwright runs all ten journeys;
-  security/dependency reports are retained; required checks protect the target branch.
-- **Definition of done:** Record remote URL, immutable Actions run URLs, commit SHA, job results, and
-  any runner-specific remediation in a new completion artifact.
-- **Reason the issue exists:** No publication destination or push authority was provided.
-- **Priority:** P3.
-- **Why this priority:** It adds independent reproducibility but does not block the complete local
-  product.
-- **How to prevent regressions:** Frozen lockfile, required jobs, migration/schema checks, service
-  health waits, artifact retention, and branch protection.
-- **How to test:** Execute the authored CI matrix on the selected remote and compare its results with
-  this local completion record.
-- **Audit policies:** Validation-proof selection, preexisting-failure triage, deployment hazards,
-  and current-truth verification.
-- **Other considerations:** Keep provider/live tests excluded; use CI secrets only when a separately
-  approved live job exists.
+- **What:** Select a destination, push the local commits, protect the branch, and run the authored
+  Python/PostgreSQL/security/package/Playwright matrix.
+- **Acceptance:** Immutable remote commit and Actions links for every required green job, including
+  all three PostgreSQL tests and all ten Playwright journeys.
+- **Gate:** The repository has no remote and no publication destination or push authority was given.
 
-## P3 - Add production data governance, abuse controls, and recovery proof
+## P3 - Add production governance, abuse controls, and recovery proof
 
-- **Who:** Platform, security, privacy, and operations owners.
-- **What:** Implement deployment-specific rate limits, storage encryption, backup/restore,
-  retention/deletion, monitoring, and incident procedures.
-- **How discovered:** The local threat model and operations guide correctly leave these policies to
-  the selected environment.
-- **Where:** Ingress/API gateway, PostgreSQL/storage platform, secret manager, monitoring, scheduled
-  retention jobs, and `docs/security.md` / `docs/operations.md` follow-up records.
-- **When:** Before production data or sustained multi-user traffic.
-- **Detailed description:** Evaluation evidence may contain proprietary or personal content. Audit
-  and immutable run provenance complicate deletion. The deployment must define retention classes,
-  legal holds, export deletion, backup expiry, restoration compatibility, abuse quotas, alerts, and
-  incident ownership without claiming that an export package is a database backup.
-- **Acceptance criteria:** Encrypted transport/storage readback; per-principal/workspace rate limits;
-  tested SQLite/PostgreSQL backup as applicable; restore to a compatible Alembic revision;
-  documented deletion and audit retention; alerting for worker/lease/database/auth failures.
-- **Definition of done:** Perform a restore drill and policy readback in the selected environment,
-  retain evidence, and update the threat model and operator runbook.
-- **Reason the issue exists:** These controls depend on hosting, legal, and business decisions
-  outside a local portfolio repository.
-- **Priority:** P3 before production; P4 for optional LangSmith/W&B/RAGAS/DeepEval or dark-theme work.
-- **Why this priority:** They govern operational risk rather than current local functionality.
-- **How to prevent regressions:** Infrastructure-as-code policy tests, periodic restore drills,
-  retention job readback, rate-limit tests, key rotation, and alert exercises.
-- **How to test:** Hosted load/abuse tests, backup/restore drill, deletion/readback checks, encryption
-  inspection, and monitoring fault injection.
-- **Audit policies:** Security review, state-readback persistence, validation-proof selection,
-  deployment hazards, and retention governance.
-- **Other considerations:** Optional tracking/evaluator integrations must remain secret-safe,
-  provider-neutral, opt-in, and unable to weaken the offline core.
+- **Who:** Platform, operations, security, and privacy owners.
+- **What:** Define and implement rate limits, storage encryption, backup/restore, retention/deletion,
+  monitoring, and incident procedures for the selected environment.
+- **Acceptance:** Hosted policy readback, per-principal/workspace abuse tests, compatible-revision
+  restore drill, retention and legal-hold behavior, key rotation, and worker/auth/database alerts.
+- **Gate:** These controls depend on hosting, legal, and business decisions outside this local repo.
 
 # 1. Project Identity & Strategic Context
 
-**Freshness: High - verified in this completion session.**
+**Freshness: High - verified in the Phase 3 completion session.**
 
-- **Project:** EvalForge LLM Evaluation Dashboard.
-- **Repository:** `/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard`.
-- **Purpose:** Compare prompts/models on versioned benchmarks and retain explainable quality,
-  hallucination-risk, relevance, latency, usage, cost, and provenance evidence.
-- **Phase 3 objective:** Close Phase 2 identity, cold-route, durable execution, PostgreSQL,
-  calibration-contract, provider-safety, and evidence-portability next steps while preserving the
-  familiar work-app UI.
-- **Implementation commit:** `TO_BE_RECORDED_AFTER_COMMIT`.
-- **Branch/remotes:** local `main`; no remote, push, hosted deployment, or external CI run.
-- **Hard constraints preserved:** offline default; no unapproved provider call or external transfer;
-  no public deployment claim; exact proof-layer separation; SQLite embedded topology; PostgreSQL
-  lease topology; no hidden billable retry.
+EvalForge is the portfolio-grade LLM evaluation product at
+`/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard`. It uses FastAPI,
+Streamlit, SQLAlchemy/Alembic, SQLite or PostgreSQL, and custom deterministic metrics. Its product
+goal is to let a reviewer compare prompt/model candidates on shared test cases, inspect case-level
+evidence, understand hallucination/relevance/correctness-style scores, and export a trustworthy
+record without presenting an AI-demo interface.
+
+Phase 2 established the restrained work-app UI. Phase 3 added the identity, tenant, execution,
+provider-safety, export, PostgreSQL, container, and release-proof foundations most likely needed for
+shared use. Zero-cost local demo mode remains the default. Shared/public, paid-provider, and hosted
+claims remain separate authority and proof layers.
 
 # 2. Current System State & Architecture Map
 
-**Freshness: High - verified in this completion session.**
+**Freshness: High - verified against the final source commits.**
 
-- Browser -> Streamlit -> local/OIDC session -> typed API client -> FastAPI authentication and role
-  dependency -> tenant-scoped service/repository -> SQLite or PostgreSQL.
-- Embedded or external workers discover committed rows, atomically claim a lease, heartbeat, fence
-  writes, call an allowlisted adapter, and persist output before scoring.
-- Local mode supplies one deterministic Owner/workspace and is loopback-only. OIDC mode requires an
-  exact HTTPS issuer/audience/JWKS/public/API contract plus provisioned active membership.
-- Viewer reads/exports; Editor manages benchmarks/prompts/runs; Admin manages model profiles; Owner
-  is reserved for governance.
-- Complete local functionality includes all six cold routes, deterministic runs, paired comparison,
-  strict redacted/full exports, CLI workspace management, and truthful readiness.
-- No current local P0/P1 blocker is known. Hosted identity, remote CI, paid calibration, and
-  production governance remain deliberately external.
+- API composition and lifespan: `src/evalforge/api/app.py`.
+- Configuration and topology validation: `src/evalforge/config.py`.
+- Authentication and authorization: `src/evalforge/security/`, API dependencies, session routes,
+  ordered Viewer/Editor/Admin/Owner roles, exact issuer/subject memberships.
+- Persistence: workspace-scoped datasets, cases, prompts, models, runs, candidates, results,
+  attempts, audit events, exports, and idempotency in `src/evalforge/db/` and repositories.
+- Migrations: `0001` through `0004`; identity/tenant backfill and durable execution leases are at
+  Alembic head.
+- Execution: database claims, lease tokens/epochs, heartbeats, fencing, attempts, safe cancellation,
+  and billing-ambiguous handling under `src/evalforge/evaluation/`.
+- Runtime roles: `embedded_single`, `api_only`, and `database_worker`; SQLite is accepted only for
+  embedded single-process use, while PostgreSQL is required for database workers.
+- Dashboard: neutral top-level `src/evalforge/streamlit_app.py`, plain-language pages and shared
+  shell under `src/evalforge/dashboard/`, identity-aware workspace caches, role-aware actions.
+- Exports: canonical `evalforge.run-export.v1` packages, response hashes, disclosure profiles, and
+  a private idempotent file sink under `src/evalforge/exports/`.
+- Deployment source: non-root API/dashboard images, Compose PostgreSQL, trusted hosts, secret-mounted
+  Streamlit auth, derived-host healthcheck, and shared `EVALFORGE_API_URL`.
 
 # 3. Critical Decisions & Reasoning History
 
-**Freshness: High - verified in this completion session.**
+**Freshness: High - decisions remain active.**
 
-- Kept the Phase 2 neutral work-app shell and progressive disclosure; Phase 3 did not foreground
-  agent machinery or replace Streamlit.
-- Made local identity deterministic and loopback-only so the offline demo stays simple without
-  making headerless public access look safe.
-- Put tenant scope in persistence, repositories, services, analytics, exports, and caches rather
-  than relying on UI filters.
-- Required asymmetric OIDC tokens and exact issuer matching; bounded JWKS unknown-key refreshes.
-- Separated Streamlit OAuth client secrets from backend token verification and required HTTPS before
-  forwarding access tokens.
-- Used database leases and fencing rather than an in-memory queue; retained ambiguous leases until
-  expiry and never claimed exactly-once provider billing.
-- Replaced export denylisting with a strict safe-provenance allowlist so future fields fail closed.
-- Disabled every generic billable generation retry, including 429, because compatible gateways do
-  not prove rejection before upstream work.
-- Kept calibration explicitly offline/statistical until a human-reviewed authorized live study.
+1. Preserve frictionless loopback-local use while making shared identity an explicit OIDC mode.
+2. Enforce workspace ownership in persistence and service boundaries, not only in UI filters.
+3. Carry identity/workspace through cache keys and purge state on identity, workspace, or `401`
+   boundaries.
+4. Treat the database row as queue authority and fence every worker mutation; never infer safety
+   from an in-process queue.
+5. Do not immediately replay an uncertain billable provider outcome. Record `billing_ambiguous` and
+   retain the lease until expiry.
+6. Use a single API lifespan migration authority to avoid duplicate startup races.
+7. Require PostgreSQL for multi-process workers and reject SQLite for that topology at configuration
+   and CLI boundaries.
+8. Default every export format to the same redacted disclosure profile. Require a separate warning
+   and acknowledgement for full stored content.
+9. Keep provider calls, hosted identity, remote publication, and production governance outside the
+   local completion claim unless separately authorized and proved.
+10. Keep technical evidence progressively disclosed and use ordinary work-product language rather
+    than AI-themed decoration.
 
 # 4. Recent Work & Iteration Log (High Priority)
 
-**Freshness: High - verified in this completion session.**
+**Freshness: High - final session record.**
 
-- Read the Phase 2 handoff and governing home/self-learning/pre-compact rules before implementation.
-- Fixed the cold Streamlit route collision with a neutral top-level launcher and a six-route cold
-  Playwright matrix.
-- Added migrations `0003` and `0004`, identity/security modules, role dependencies, scoped
-  repositories, audit events, dashboard session/cache controls, and operator CLI commands.
-- Added database leases, heartbeats, attempts, worker modes, truthful API-only readiness, fencing,
-  takeover, and database-clock claim eligibility.
-- Added evaluator declarations, offline calibration, provider transfer/spend gates, no-retry
-  accounting, versioned packages, strict redaction, and local sink receipts.
-- An initial adversarial review found four P1/P2 gaps: missing deployable Streamlit OAuth secret,
-  denylist redaction, plaintext OIDC API transport, and generic 429 retry. All were fixed and
-  independently retested.
-- Final Compose process proof found one additional shared-environment omission: the API container
-  itself lacked the public HTTPS `EVALFORGE_API_URL`. The URL moved into the shared identity anchor,
-  a contract assertion was added, and the rerun was healthy.
-- Completion docs, final handoff, mirror, commits, and clean status are the final closeout actions.
+- `c3775be470bc64146172d81e1c919f3a16056d2e` — `feat: harden EvalForge shared evaluation workflows`.
+  This coherent source commit contains the Phase 3 identity, tenant, leases, provider/export,
+  migration, UI, container, CI, test, and documentation foundation plus the final adversarial fixes.
+- `7393422ee16103d9396b248d0b1f31ad5f717d7f` — `fix: normalize EvalForge release imports`.
+  This applies the eight import-order corrections found by the true isolated-release audit.
+- `aa53c64ff67bc2e8c148ef65a0fae60df75326e6` —
+  `fix: pass public API URL into Compose services`. This closes the final Compose contract gap and
+  adds focused regression coverage and operational documentation.
+- The commit containing this handoff archives the final proof, refreshes the pre-compact snapshot,
+  and records the byte-identical Beladed handoff mirror.
+- No remote was created, no provider credential was read, no benchmark was transmitted, and no
+  billable request was made.
 
 # 5. Testing, Validation & Quality Framework
 
-**Freshness: High - verified in this completion session.**
+**Freshness: High - rerun on the final release bytes.**
 
-- Offline matrix with sockets disabled and Unix sockets allowed: `293 passed, 3 skipped, 11
-  deselected in 23.63s`; skipped rows were the explicitly separate PostgreSQL tests.
-- Branch coverage: `83.92%`, above the required `80%` floor.
-- PostgreSQL 17: head migration, no drift, seed `2/2/3`, doctor ready, and `3 passed in 1.75s`.
-- Ruff: all checks passed; format: `111 files already formatted`.
-- Mypy strict: success across `67` source files. Bandit: no findings. pip-audit: no known
-  vulnerabilities; local non-PyPI package skipped as expected.
-- Live boundary: `1 skipped in 0.09s` only after every nonsecret gate; no credential read or client.
-- Compose: valid configuration exit `0`; missing issuer and missing OAuth secret each fail; final API
-  and dashboard healthy; readiness ready; protected metadata without auth `401`; dashboard `200`.
-- Playwright: `10 passed in 32.12s` on owned ports `8067 -> 8567`.
-- Browser plugin proof preceded Playwright: desktop `1440x900`, mobile `390x844`, no overflow or
-  warning/error logs, full evaluation and disclosure interactions.
+- Offline regression with sockets disabled: `304 passed, 3 skipped, 11 deselected`.
+- Branch coverage: `83.89%`, above the required `80%` floor.
+- Ruff: lint green; format check reports `111 files already formatted`.
+- mypy strict: success across `67` source files.
+- Bandit: exit `0` with project configuration; no findings emitted.
+- pip-audit: no known dependency vulnerabilities; the local non-PyPI package was skipped as
+  expected.
+- PostgreSQL `17.10-alpine`: revisions `0001` through `0004`, no Alembic drift, deterministic seed
+  `2 datasets / 2 prompts / 3 models`, doctor ready, `3 passed in 1.39s`.
+- Focused Compose/config/startup contracts: `37 passed in 0.57s`.
+- Container proof: API and dashboard images built; Psycopg `3.3.4`; both images run as `evalforge`;
+  Compose API and dashboard healthy; unauthenticated protected metadata request returns `401`.
+- Browser proof: desktop `1280 x 720`, mobile `390 x 844`, complete offline evaluation journey,
+  redacted package preparation, full-evidence warning/gate, no warning/error logs, no mobile overflow.
+- Playwright E2E: `10 passed in 30.37s` after Browser proof.
+- Live/provider tests remained deselected; no credential, provider client, or billable call was used.
 
 # 6. Debugging History & Failure Modes
 
-**Freshness: High - verified in this completion session.**
+**Freshness: High - regression tests cover the resolved cases.**
 
-- Cold subroutes originally collided with Streamlit's adjacent legacy `pages/` discovery; the
-  top-level launcher fixes registration rather than hiding an overlay.
-- Populated SQLite downgrade initially failed because batch reconstruction dropped a referenced
-  parent while foreign keys were active; private migration connection handling and FK validation
-  fixed it.
-- PostgreSQL exposed host/database clock skew in `next_claim_at`; server-side database defaults and
-  an integration assertion fixed immediate claim eligibility.
-- Heartbeat failure could close an attempt yet make work immediately replayable; the worker now
-  cancels in-flight work, stops writes, closes only the attempt, and leaves the lease until expiry.
-- Exact-key export redaction leaked unanticipated content fields; strict allowlisting and a full
-  sentinel fixture now make unknown fields disappear.
-- Production OIDC could forward a token to plaintext `api_url`; non-test OIDC now requires HTTPS and
-  dashboard auth/client use one validated settings snapshot.
-- Generic 429 retry could duplicate billed work; provider SDK and adapter retries are both zero.
-- Compose static parsing did not catch a missing API-container HTTPS URL; process-health proof did,
-  and the shared anchor now supplies it to both services.
-- One local Playwright command initially opened the unrelated app already on `8501`; the final proof
-  used isolated owned ports and left the other service untouched.
+- Cold direct routes failed because launching beside a literal `dashboard/pages/` directory invoked
+  Streamlit's legacy router. The neutral top-level launcher fixes the bootstrap cause.
+- Populated SQLite migration initially failed when batch recreation dropped a referenced parent with
+  foreign keys active. The migration now uses a private connection, validates `foreign_key_check`,
+  and restores enforcement. PostgreSQL bypasses SQLite-only batch behavior.
+- Durable execution tests exposed whole-second SQLite clock precision, duplicate claims, stale-owner
+  writes, heartbeat loss, shutdown hangs, and replay risk. Millisecond database time, fencing, bounded
+  shutdown, and billing-ambiguous retention close those paths.
+- A stale lease owner could once finish and clear the active worker's lease. Finalization now verifies
+  ownership and propagates lease loss without releasing another attempt.
+- HTTP 429 could previously be modeled as a clean failure despite possible upstream billing. It is
+  now stored as `billing_ambiguous` with zero automatic provider retries.
+- Raw JSON/CSV and evidence packages once had divergent disclosure paths. All three now share the
+  same profile/confirmation helper and contract tests.
+- Compose originally omitted the public API URL from the shared service environment. Commit
+  `aa53c64` adds it to the common anchor and proves the contract.
 
 # 7. Established Processes & Effective Patterns
 
-**Freshness: High - verified in this completion session.**
+**Freshness: High - use for continuation.**
 
-- Continue from the newest handoff, then verify current Git/process truth before broad discovery.
-- Use read-only audits in parallel, implement bounded file lanes, integrate, then run focused and
-  complete gates.
-- Use `/Users/fortunevieyra/.codex/bin/codex-secret-safe-exec.py` for every command and base64 argv
-  for complex or environment-bearing invocations.
-- Keep local, PostgreSQL, container, Browser, Playwright, hosted, production, and paid-provider proof
-  separate.
-- Use fresh owned ports/services, inspect before startup, and remove only owned containers, volumes,
-  images, secrets, and temporary directories.
-- Browser proof comes before Playwright for rendered UI work. Cypress is not used for E2E.
-- Finish with completion documentation in every touched repo, final `.mdc` handoffs, intentional
-  commits, `git diff --check`, and clean status.
+Read the latest handoff before broad discovery. Keep source, container, hosted, production, browser,
+and provider proof layers separate. Run deterministic/no-network tests first, then disposable
+PostgreSQL and container proof, then the in-app Browser, then Playwright. Use owned ports and remove
+only owned runtime resources. Keep external-provider tests marked and excluded from default CI.
+
+Use migrations for schema changes, database time for lease eligibility, fenced tokens for worker
+writes, exact workspace context for public repositories, and denial-first authorization tests. For
+visible UI changes, preserve the current neutral palette, typography, spacing, compact cards,
+plain-language labels, responsive behavior, and progressive disclosure.
 
 # 8. Risks, Technical Debt & Strict Preservation Rules
 
-**Freshness: High - verified in this completion session.**
+**Freshness: High - unresolved items are intentional boundaries.**
 
-- Do not bind local auth beyond loopback or add a header-based authentication shortcut.
-- Do not remove workspace predicates, role dependencies, cache identity, suspended-record checks,
-  or cross-tenant denial uniformity.
-- Do not send tokens to HTTP, persist/log them, or put OAuth client/cookie secrets in Git or normal
-  environment output.
-- Do not weaken strict redacted-export allowlisting into a denylist. Unknown fields must remain
-  omitted.
-- Do not add generic provider retries or imply the spend ceiling is a provider billing limit.
-- Do not replay billing-ambiguous attempts or claim exactly-once external calls.
-- Keep SQLite embedded/single-process. Use PostgreSQL for multi-process claim coordination and still
-  retain provider ambiguity semantics.
-- `/metrics` and `/health/ready` must be ingress-internal in shared deployments.
-- No rate-limit, retention automation, encryption-at-rest, restore drill, real IdP, hosted TLS,
-  external CI, or paid calibration proof currently exists.
+- Do not use SQLite with `database_worker`; the topology must continue to fail closed.
+- Do not weaken exact OIDC issuer/audience or HTTPS validation outside the explicit test harness.
+- Do not expose bearer tokens in URLs, logs, screenshots, persistence, or plaintext cache keys.
+- Do not let Viewer accounts regain mutation actions or allow IDs/idempotency keys to cross
+  workspace boundaries.
+- Do not auto-retry a possibly billable provider request or describe leases as exactly-once billing.
+- Do not widen the default redacted export allowlist; new fields must be deliberately classified.
+- Do not create a remote, push, deploy, transmit benchmark data, or incur spend without explicit
+  user authority.
+- Do not claim dark-mode support, hosted identity, production governance, or human calibration from
+  the local evidence.
+- Locally built proof images remain; owned containers, PostgreSQL container, network, volume, and
+  native proof services were removed/stopped.
 
 # 9. Key Artifacts & References
 
-**Freshness: High - verified in this completion session.**
+**Freshness: High - paths verified for this release.**
 
 - Completion record: `docs/llm-evaluation-dashboard/2026-07-18-phase-3-hardening.md`
 - Phase 3 plan: `docs/superpowers/plans/2026-07-18-evalforge-phase-3-hardening.md`
-- Final handoff: `docs/handoffs/2026-07-18-codex-evalforge-phase-3.handoff.mdc`
-- Identity/security: `src/evalforge/security/`, `src/evalforge/api/dependencies.py`,
-  `src/evalforge/api/routes/session.py`, `src/evalforge/audit.py`
-- Tenant/durable migrations: `src/evalforge/migrations/versions/0003_identity_tenant_scope.py`,
-  `0004_durable_execution_leases.py`, `src/evalforge/migrations/env.py`
-- Execution: `src/evalforge/evaluation/leases.py`, `executor.py`, `service.py`
-- Calibration/evaluators: `src/evalforge/evaluation/calibration.py`, `evaluators/`
-- Export: `src/evalforge/exports/`, API run export, dashboard run detail, CLI `export-package`
-- Startup/deployment: `scripts/start_api.py`, `scripts/start_dashboard.py`, `compose.yaml`
-- Product docs: `README.md`, `docs/architecture.md`, `api.md`, `operations.md`, `security.md`,
-  `evaluation-methodology.md`
-- Governing rules: `/Users/fortunevieyra/AGENTS.md`,
-  `/Users/fortunevieyra/.codex/CODEX_SELF_LEARNING_SYSTEM.md`, and
-  `/Users/fortunevieyra/.codex/rules/pre-compact-handoff.md`
+- This handoff: `docs/handoffs/2026-07-18-codex-evalforge-phase-3.handoff.mdc`
+- Refreshed pre-compact package:
+  `docs/handoffs/2026-07-18-codex-evalforge-phase-3.precompact.handoff.mdc`
+- Byte-identical mirror:
+  `/Users/fortunevieyra/Documents/Github/beladed.com/docs/handoffs/2026-07-18-codex-evalforge-phase-3.handoff.mdc`
+- Operations and security: `docs/operations.md`, `docs/security.md`
+- API/runtime: `src/evalforge/api/app.py`, `src/evalforge/config.py`, `src/evalforge/container.py`
+- Identity: `src/evalforge/security/`, `src/evalforge/api/routes/session.py`
+- Execution: `src/evalforge/evaluation/leases.py`, `src/evalforge/evaluation/service.py`
+- Exports: `src/evalforge/exports/package.py`, `src/evalforge/dashboard/pages/run_detail.py`
+- Migrations: `src/evalforge/migrations/versions/0003_identity_tenant_scope.py`,
+  `src/evalforge/migrations/versions/0004_durable_execution_leases.py`
+- Compose/images: `compose.yaml`, `Dockerfile.api`, `Dockerfile.dashboard`
+- Screenshot proofs and SHA-256 values are recorded in the completion document under Rendered UI
+  proof.
 
 # 10. Next Steps & Prioritized Backlog
 
-**Freshness: High - verified in this completion session.**
+**Freshness: High - these are not local Phase 3 defects.**
 
-1. Select a deployment/IdP and prove hosted TLS login, logout, role, revocation, trusted-host,
-   readiness, and metrics boundaries.
-2. Authorize one provider/model/benchmark/spend envelope and complete human-reviewed calibration
-   before using scores as release gates.
-3. Select a Git remote, publish the implementation/docs commits, run the external CI matrix, and
-   retain immutable run links.
-4. Implement and prove rate limiting, storage encryption, retention/deletion, backup/restore,
-   alerting, and incident procedures for the selected host.
-5. Only then consider optional LangSmith/W&B/RAGAS/DeepEval integrations or a tested dark theme;
-   keep them opt-in and behind progressive disclosure.
+1. P2: choose a host and IdP, provision secrets and memberships, then prove hosted TLS/auth/role and
+   revocation journeys with authenticated readback.
+2. P2: obtain privacy and budget approval for one bounded provider/model plus a human calibration
+   protocol; retain immutable methodology and cost evidence.
+3. P3: choose a Git remote, publish the local commits, enable branch protection, and retain exact
+   external CI run links.
+4. P3: implement and prove deployment-specific rate limiting, encryption, retention/deletion,
+   backup/restore, monitoring, and incident procedures.
+5. P4: only if product value warrants it, add LangSmith/W&B tracking, RAGAS/DeepEval adapters, or a
+   designed dark theme behind explicit dependency and data-transfer review.
 
 # 11. Continuation & Working Style Instructions
 
-**Freshness: High - verified in this completion session.**
+**Freshness: High - follow for the next authorized phase.**
 
-Continue from this artifact and the Phase 3 completion record; do not restart Phase 1/2 discovery.
-Verify current branch, ownership, services, and proof artifacts before action. Preserve the non-AI-
-looking work-app UI and plain task language. Make reasonable local choices, but stop before creating
-a remote, deploying publicly, using credentials, transmitting benchmark data, or incurring spend
-without explicit authority. Report exact evidence and blockers rather than flattening source,
-container, hosted, production, and paid-provider layers into one status.
+Continue from this package and current `main`; do not restart Phase 3 discovery. Lead with product
+outcomes and use familiar work-app interactions. Verify current Git/runtime truth before acting.
+Preserve zero-cost offline mode and the explicit proof boundaries above. Prefer small, reversible,
+tested changes. Use Playwright for E2E; do not introduce Cypress E2E. Stop before any action requiring
+credentials, spend, publication, public exposure, or a production policy choice unless the user has
+explicitly authorized it.
+
+When work completes, update the repo completion document and the 12-section handoff, refresh the
+pre-compact package before context compaction, mirror the final handoff byte-identically to the
+Beladed handoff directory, commit intentionally, and report exact validation rather than a flattened
+green claim.
 
 # 12. Confidence & Freshness Assessment
 
 **Freshness: High - verified in this completion session.**
 
-Sections 1-11 are high-confidence for the current local tree because implementation, focused tests,
-full coverage, PostgreSQL 17, live guard, image builds, Compose process health, Browser rendering,
-Playwright, and adversarial review were completed in this execution chain. The implementation commit
-placeholder must be replaced after the coherent source commit, then the repo/global handoffs must be
-mirrored and clean status verified. Hosted identity/TLS, remote CI, production governance, and paid
-calibration remain explicitly unverified external layers.
+Sections 1-11 are high-confidence for the final local source because implementation commits, a true
+isolated archive audit, complete offline regression, static/security/dependency checks, disposable
+PostgreSQL 17, container/Compose startup, Browser desktop/mobile interaction, and Playwright were all
+completed on the release bytes. The three screenshots are hash-addressed in the completion record.
+The handoff and pre-compact package contain the same final state, and the Beladed copy is required to
+be byte-identical.
+
+Hosted identity/TLS, remote CI, paid-provider behavior, human calibration, production governance,
+and dark-mode rendering remain explicitly unverified external or optional layers. No statement in
+this package should be read as proof of those layers.
