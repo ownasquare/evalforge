@@ -1,0 +1,495 @@
+---
+description: "EvalForge Phase 2 productization completion and continuation package"
+alwaysApply: false
+---
+
+# INVENTORY NEXT ITEMS
+
+The Phase 2 closeout scan covered the FastAPI run/analytics/export contracts, SQLAlchemy persistence,
+custom metric direction and applicability, Streamlit shell and all six user-facing routes, named-run
+preflight/create/readback, desktop/mobile Browser-plugin rendering, the real Streamlit-to-FastAPI
+Playwright path, security/dependency gates, operations/architecture/security documentation, git
+history/remotes, and the Phase 1 inventory. The current local single-user scope has no unresolved P0
+or P1 issue. The following bounded deployment, framework, scale, and calibration items remain.
+
+## P2 — Add identity and network-exposure controls before shared deployment
+
+- **Who:** EvalForge API/dashboard/security owner in
+  `/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard`.
+- **What:** The app has no user authentication, object authorization, tenant boundary, public TLS
+  ingress, user-scoped cache/data model, or abuse/rate-limit layer.
+- **How discovered:** Current source review of API routes, repositories, dashboard client/state,
+  `docs/security.md`, `docs/operations.md`, and the Phase 1 security inventory.
+- **Where:** `src/evalforge/api/app.py`, `src/evalforge/api/routes/*.py`,
+  `src/evalforge/models.py`, `src/evalforge/repositories.py`,
+  `src/evalforge/dashboard/client.py`, dashboard state/caches, Compose/ingress configuration, and
+  security/operations documentation.
+- **When:** Before binding beyond loopback, sharing one database with multiple users, accepting
+  proprietary benchmarks from multiple identities, or publishing a hosted route.
+- **Detailed description:** Resource IDs and analytics are workspace-global. Trusted-host, CORS,
+  body-size, header, redaction, and loopback controls are useful local safeguards but do not
+  establish a principal or tenant. Public exposure could make prompts, references, outputs, exports,
+  provider request IDs, usage, and spend cross-user readable or mutable.
+- **Acceptance criteria:**
+  - Every request has an authenticated principal and a denial-first authorization decision.
+  - Dataset, case, prompt, model, run, result, comparison, analytics, and export queries are
+    tenant-scoped.
+  - Dashboard caches and selected-resource state are invalidated across sign-in, sign-out, tenant,
+    and role transitions.
+  - Anonymous, cross-tenant, stale-session, and insufficient-role requests fail closed.
+  - Hosted TLS, secret management, rate limits, audit events, retention, and deletion behavior are
+    documented and read back from the deployed environment.
+- **Definition of done:** Ship migrations and contracts that carry identity scope through API,
+  persistence, seed data, exports, UI, audit logs, and operations. Prove object-level authorization
+  with pytest, identity journeys with Playwright, and deployed policy with authenticated hosted
+  readback. Update the threat model and retention policy.
+- **Reason the issue exists:** The requested project was intentionally completed as a safe,
+  deterministic, loopback-first single-user evaluator. Superficial authentication without
+  tenant-scoped persistence would create a false sense of safety.
+- **Priority:** P2.
+- **Why this priority:** It does not affect proven local correctness, but it is a hard blocker for
+  any shared or public deployment.
+- **How to prevent regressions:** Central authorization dependencies, tenant keys in uniqueness and
+  cache boundaries, denial-first fixtures, immutable audit events, and cross-identity regression
+  suites.
+- **How to test:** Pytest at repository/API boundaries; Playwright for login, logout, role, deep-link,
+  cache, and cross-tenant journeys. Cypress is not applicable because this is not a React
+  repository.
+- **Audit policies:** Identity-context regression, route/API contract mapping, state-readback
+  persistence, validation-proof selection, security review, and deploy-automation hazards.
+- **Other considerations:**
+  - Decide whether provider credentials are deployment-wide or tenant-specific before schema work.
+  - Protect database and export data at rest according to the deployment threat model.
+  - Preserve immutable evaluation provenance while defining deletion and retention.
+
+## P3 — Remove the cold direct-deep-link Streamlit bootstrap overlay
+
+- **Who:** EvalForge Streamlit dashboard owner.
+- **What:** A cold request to a dynamic subroute can show Streamlit's framework page-not-found
+  overlay before function-backed navigation registration completes.
+- **How discovered:** Phase 1 cold-route DOM/screenshot/console proof; Phase 2 deliberately retained
+  the clean, documented root-first workflow and did not claim this framework behavior fixed.
+- **Where:** `src/evalforge/dashboard/app.py`, `tests/e2e/test_dashboard_smoke.py`, pinned
+  Streamlit configuration/version, and `docs/operations.md`.
+- **When:** On a newly started process when entering `/evaluate`, `/runs`, `/compare`,
+  `/assets`, or `/settings` directly instead of starting at `/`.
+- **Detailed description:** Function-backed `st.navigation` pages register during application
+  execution. The frontend can resolve the requested path before registration, display its own
+  overlay, and then render the correct page. Warm route changes and root-first navigation are clean.
+- **Acceptance criteria:**
+  - Every dynamic route loads directly on a cold process without an overlay or console error.
+  - The correct route and active navigation state render consistently.
+  - Browser back/forward, desktop/mobile layout, and keyboard accessibility remain correct.
+- **Definition of done:** Implement a proven static-page, router, or framework-upgrade solution; add
+  a Playwright cold-server deep-link matrix; record clean DOM, screenshot, and console evidence; and
+  remove the root-first limitation from documentation only after proof.
+- **Reason the issue exists:** This is a Streamlit dynamic-route bootstrap timing behavior, not an
+  API, analytics, or persistence failure.
+- **Priority:** P3.
+- **Why this priority:** The supported root-first product path is fully functional and browser-clean;
+  the issue mainly affects bookmarks and cold direct links.
+- **How to prevent regressions:** Keep a cold-server direct-link Playwright case for every route and
+  fail on framework overlays or console errors.
+- **How to test:** Playwright E2E for route/bootstrap behavior plus existing Streamlit AppTest page
+  tests. Cypress is not applicable.
+- **Audit policies:** Frontend proof, route/API contract mapping, validation-proof selection, and
+  design-system consistency.
+- **Other considerations:**
+  - Do not hide or auto-dismiss the overlay as a substitute for fixing registration.
+  - Recheck the matrix on every Streamlit upgrade.
+  - Preserve visible, keyboard-accessible route navigation.
+
+## P3 — Add durable queue and lease semantics before horizontal execution
+
+- **Who:** EvalForge evaluation execution and operations owner.
+- **What:** Runs use one in-process FIFO worker. PostgreSQL URL support does not make execution safe
+  across multiple API processes or hosts.
+- **How discovered:** Review of `src/evalforge/evaluation/executor.py`,
+  `src/evalforge/evaluation/service.py`, `docs/architecture.md`, `docs/operations.md`, and
+  current one-worker startup commands.
+- **Where:** Executor/service/repository claim paths, evaluation run/result state transitions,
+  database migrations, operational configuration, readiness, and concurrency tests.
+- **When:** Before increasing Uvicorn workers, running more than one application instance, or
+  deploying evaluation workers separately from the API.
+- **Detailed description:** The current queue and in-memory deduplication set are process-local.
+  Multiple workers could duplicate claims, lose wakeups across restarts, or produce ambiguous
+  cancellation/recovery behavior. SQLite remains the supported single-writer local default.
+- **Acceptance criteria:**
+  - Claims use an atomic database lease or durable broker with owner, expiry, heartbeat, and retry
+    semantics.
+  - Execution and result writes are idempotent for a run/case/candidate identity.
+  - Cancellation, worker death, lease expiry, restart, and duplicate delivery are deterministic.
+  - Readiness reports queue/worker health without claiming capacity that is not present.
+  - Concurrency and failure-injection tests prove no duplicate provider call or terminal result.
+- **Definition of done:** Add schema and executor changes, migrate safely, document topology, run
+  multi-worker PostgreSQL contention tests, prove crash recovery and cancellation readback, and
+  retain the local deterministic one-worker mode.
+- **Reason the issue exists:** The complete portfolio scope prioritized a simple, reliable local
+  worker; distributed execution would add infrastructure and operational semantics beyond Phase 2.
+- **Priority:** P3.
+- **Why this priority:** It is a scale boundary rather than a local correctness defect, but it is
+  mandatory before horizontal deployment.
+- **How to prevent regressions:** Idempotency keys, lease invariants, database uniqueness,
+  failure-injection suites, concurrency stress tests, and topology assertions in readiness.
+- **How to test:** Pytest integration against PostgreSQL under concurrent claim/cancel/restart
+  scenarios; Playwright only for resulting UI lifecycle/readback. Cypress is not applicable.
+- **Audit policies:** State-readback persistence, route/API contract mapping, validation-proof
+  selection, preexisting-failure triage, and deploy-automation hazards.
+- **Other considerations:**
+  - Do not treat a successful PostgreSQL connection as horizontal-worker proof.
+  - Keep provider concurrency and cost caps independently bounded.
+  - Preserve immutable snapshots and partial-result behavior during retries.
+
+## P3 — Obtain external PostgreSQL and GitHub Actions proof after publication
+
+- **Who:** EvalForge CI/release/operations owner.
+- **What:** PostgreSQL and CI source contracts exist, but this local repository has no configured
+  remote, executed GitHub Actions run, or retained external PostgreSQL job evidence.
+- **How discovered:** Git remote inspection, Phase 1 completion evidence, CI/operations review, and
+  the Phase 2 proof-boundary audit.
+- **Where:** `.github/workflows/ci.yml`, `src/evalforge/database.py`,
+  `src/evalforge/migrations/**`, `docs/operations.md`, and a future user-selected Git remote.
+- **When:** After the user authorizes a publication destination or before claiming external CI or
+  PostgreSQL validation.
+- **Detailed description:** Configuration and contract tests validate the optional
+  `postgresql+psycopg` path. Only a real service-backed run proves runner networking, packaged
+  migration behavior, browser availability, and service readiness.
+- **Acceptance criteria:**
+  - A remote Actions run is green for Ruff, mypy, Bandit, pip-audit, deterministic coverage,
+    PostgreSQL migration/seed/doctor, package build, and Playwright E2E.
+  - PostgreSQL reaches the packaged migration head, seeds deterministic fixtures, reports ready, and
+    leaves no unexpected schema diff.
+  - The immutable run URL, commit SHA, and relevant logs are recorded without secrets.
+- **Definition of done:** Configure a user-selected remote, push the local commits, execute CI,
+  remediate runner-only failures, protect required jobs, and update the completion record with exact
+  external evidence.
+- **Reason the issue exists:** The user requested a new local project and did not provide authority
+  or a destination for remote publication.
+- **Priority:** P3.
+- **Why this priority:** The required SQLite path is deeply proven; PostgreSQL and remote CI are
+  optional external proof layers.
+- **How to prevent regressions:** Required protected jobs, migration/schema-diff tests, explicit
+  driver validation, service readiness checks, and retained run links.
+- **How to test:** Pytest integration against the CI PostgreSQL service and Playwright E2E in a
+  separate CI job.
+- **Audit policies:** Validation-proof selection, state-readback persistence, route/API contract
+  mapping, preexisting-failure triage, and deploy-automation hazards.
+- **Other considerations:**
+  - Keep credentials in CI secrets and out of logs/artifacts.
+  - Do not broaden deployment scope merely because a remote exists.
+  - Horizontal workers still require the separate durable-queue item.
+
+## P3 — Calibrate paid-provider and optional judge integrations before release gating
+
+- **Who:** EvalForge evaluation methodology and provider owner.
+- **What:** OpenAI-compatible provider contracts are mocked, but no paid live call, human threshold
+  calibration, RAGAS/DeepEval plugin, LLM judge, LangSmith exporter, or W&B exporter was executed.
+- **How discovered:** Provider/metric/docs review, the user's optional stack list, and the explicit
+  no-paid-call proof boundary used throughout Phase 2.
+- **Where:** `src/evalforge/evaluation/adapters/openai_compatible.py`,
+  `src/evalforge/evaluation/metrics.py`, immutable run/export schemas, Settings and preflight UI,
+  and evaluation-methodology/security documentation.
+- **When:** Before enabling external providers in a shared environment or using heuristic/judge
+  scores as production release gates.
+- **Detailed description:** The deterministic lexical and evidence metrics are transparent
+  regression signals, not factual truth. Any external judge or tracker must preserve model, endpoint
+  mode, rubric bytes/hash, schema, version, calibration set, applicability, request ID, usage, cost,
+  and privacy scope without replacing or weakening offline operation.
+- **Acceptance criteria:**
+  - A small explicitly authorized live run preserves request IDs, usage, latency, pricing source,
+    and sanitized provider errors without leaking secrets.
+  - Human-reviewed calibration reports agreement, precision/recall, or another declared measure at
+    the selected thresholds.
+  - Judge/plugin results are versioned, explainable, and not-applicable when prerequisites are
+    missing.
+  - Paid execution retains conservative preflight, explicit confirmation, spend caps, and
+    offline-by-default CI.
+- **Definition of done:** Implement any selected optional adapter/exporter behind a provider-neutral
+  interface, add mocked contract tests, perform a bounded authorized live proof, write a calibration
+  artifact, and document exact privacy and accuracy limitations.
+- **Reason the issue exists:** Live spend and external data transmission require credentials and
+  explicit authority. Optional evaluator/tracking services were not required for the complete
+  offline product.
+- **Priority:** P3 for calibration before gating; exporter-only work is P4.
+- **Why this priority:** It improves external validity and observability rather than repairing local
+  Phase 2 correctness.
+- **How to prevent regressions:** Marked live tests, offline-by-default CI, immutable rubric/provider
+  versions, cost caps, calibration-set versioning, and no silent provider fallback.
+- **How to test:** Mocked unit/integration contracts by default; explicitly marked bounded live tests;
+  human calibration review; Playwright for disclosure, consent, and pricing-state UI.
+- **Audit policies:** Payment/cost safety, security/privacy review, route/API contract mapping,
+  state-readback persistence, and validation-proof selection.
+- **Other considerations:**
+  - Never pass references into candidate prompts.
+  - Never report unknown cost as zero or synthetic telemetry as live.
+  - Never silently fall back between provider API modes.
+  - Keep LangSmith/W&B export optional and secret-safe.
+
+# 1. Project Identity & Strategic Context
+
+**Freshness: ✅ High — recently verified in this session.**
+
+- **Project:** EvalForge LLM Evaluation Dashboard.
+- **Repository:** `/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard`.
+- **Purpose:** Run versioned benchmarks across prompt/model candidates, persist immutable provenance,
+  and expose explainable correctness, relevance, groundedness, hallucination risk, constraints,
+  latency, usage, and cost evidence.
+- **Phase 2 objective:** Turn the complete Phase 1 engine into a clear, non-generic-AI-looking
+  evaluation workspace that supports named runs, guided setup, evidence review, and shared-case
+  comparison without unsupported claims.
+- **Measurable success:** deterministic run completes through the real UI/API boundary; all result
+  evidence is inspectable; metric direction and pricing coverage are truthful; desktop/mobile
+  rendering has no overflow or console errors; branch coverage remains above 80%.
+- **Hard constraints:** offline by default; no unapproved provider spend or external data transfer;
+  no public deployment claim; preserve immutable snapshots and explicit applicability; one local
+  worker; SQLite default.
+- **Stack:** Python 3.11, FastAPI, Pydantic v2, SQLAlchemy/Alembic, SQLite with optional PostgreSQL,
+  Streamlit, Plotly/Pandas, OpenAI-compatible adapter, pytest, Playwright, Ruff, mypy, Bandit,
+  pip-audit, uv.
+- **Design philosophy:** sober B2B workspace, neutral surfaces, restrained teal accent, plain task
+  language, accessible controls, explicit evidence and denominators.
+- **Implementation commit:** `67db1d60fb89a8d92affe6af8acc8e77e04acdab`.
+- **Branch/remotes:** local `main`; no Git remote, push, hosted deployment, or CI run.
+
+# 2. Current System State & Architecture Map
+
+**Freshness: ✅ High — recently verified in this session.**
+
+- **Fully implemented and verified:** named run preflight/create/readback; candidate matrix and
+  baseline; applicability and conservative estimates; deterministic execution; overview totals and
+  evidence coverage; immutable run/case evidence; export controls; direction-aware scorecard;
+  baseline/challenger aggregate and case deltas; responsive neutral shell.
+- **Architecture flow:** Browser -> Streamlit route -> typed `ApiClient` -> FastAPI route ->
+  evaluation/analytics service -> SQLAlchemy repository -> SQLite -> analytics/export read model ->
+  Streamlit.
+- **Key data behavior:** analytics use completed scored results; paired deltas require the same case;
+  unknown cost remains unavailable; known zero includes coverage; candidate labels and case IDs come
+  from stored snapshots.
+- **Partially built/in progress:** none inside declared Phase 2 scope.
+- **Broken/flaky/unstable:** no current local blocker. Cold direct subroutes retain the documented
+  Phase 1 Streamlit bootstrap limitation.
+- **Deliberately deferred:** identity/public ingress, horizontal queue/lease, remote PostgreSQL/CI
+  proof, paid-provider calibration, hosted/production deployment, optional judge/tracking exporters.
+- **Final runtime state:** owned API `127.0.0.1:8027` and Streamlit `127.0.0.1:8527` were stopped;
+  port verification returned no listeners. Browser proof tabs were finalized.
+- **Naming conventions:** task routes Home/Runs/Compare/New evaluation/Benchmarks/Settings; first
+  prompt/model pair is baseline; remaining pairs are challengers; run names are user-visible and
+  persisted.
+
+# 3. Critical Decisions & Reasoning History
+
+**Freshness: ✅ High — recently verified in this session.**
+
+- Replaced purple/cyan gradients, glow, and lab/control-room language with off-white canvas, white
+  surfaces, dark neutral type, a single teal accent, small radii, and plain workspace copy.
+- Moved New evaluation above overview metrics so the primary action remains visible on mobile.
+- Kept Streamlit rather than changing frontend frameworks because the user requested Phase 2
+  productization, not a platform rewrite; the existing API-first separation remains valuable.
+- Required a run name and included it in preflight signatures so a checked setup cannot silently
+  create a differently named run.
+- Removed overview trend/leaderboard/failure panels that lacked supported global data.
+- Rejected a winner/confidence card because the API does not establish statistical confidence or
+  automatic promotion authority.
+- Replaced the wide pairwise dataframe with a readable summary card after browser proof showed key
+  columns hidden behind internal horizontal scroll.
+- Treated hallucination risk as lower-is-better and kept thresholds direction-aware.
+- Kept deterministic demo telemetry explicitly synthetic and did not perform provider calls.
+- Made the Playwright dashboard URL configurable so tests can use owned ports and never collide with
+  unrelated local apps.
+
+# 4. Recent Work & Iteration Log (High Priority)
+
+**Freshness: ✅ High — recently verified in this session.**
+
+- Added the Phase 2 plan at
+  `docs/superpowers/plans/2026-07-17-evalforge-phase-2-productization.md`.
+- Updated `.streamlit/config.toml`, shell, theme, shared components, navigation, overview, guided
+  evaluation, run detail, compare, benchmarks, settings, client export, analytics, README, and API
+  documentation.
+- Added/expanded dashboard and analytics regression tests, including
+  `tests/dashboard/test_compare.py` and `tests/integration/test_analytics.py`.
+- Browser proof found and corrected four presentation defects: nested primary-button text color,
+  compressed recent-run status/action, horizontally clipped pairwise summary, and a mobile primary
+  action buried under stacked metrics.
+- The real Playwright test initially failed because the optional package and Chromium binary were
+  absent, then because `get_by_label("Run name")` also matched the help button. Installed the
+  explicit optional dependency/browser runtime and changed the locator to an exact textbox role.
+- Created completion documentation at
+  `docs/llm-evaluation-dashboard/2026-07-17-phase-2-productization.md`.
+- Created a required pre-compact snapshot before continuing after automatic compaction.
+- No source or runtime work remains for Phase 2. This file is carried by the separate
+  completion/archive commit immediately after the implementation commit.
+
+# 5. Testing, Validation & Quality Framework
+
+**Freshness: ✅ High — recently verified in this session.**
+
+- `make coverage`: `146 passed, 1 deselected`; total branch coverage `82.85%`, above the
+  `80%` floor.
+- Focused dashboard plus analytics: `48 passed`.
+- Focused comparison TDD: expected red at three dataframes, then `4 passed` after the summary card.
+- Real-boundary E2E:
+  `EVALFORGE_DASHBOARD_URL=http://127.0.0.1:8527/ uv run --extra e2e pytest tests/e2e/test_dashboard_smoke.py -q -m e2e`
+  -> `1 passed`.
+- Ruff: `73 files already formatted`; all lint checks passed.
+- mypy strict: success across `51` source files.
+- Bandit: exit 0 with no finding output.
+- pip-audit: no known vulnerabilities; the local project package was skipped as not present on PyPI.
+- `uv sync --all-groups --frozen`: `111` packages audited.
+- `git diff --check` and staged whitespace checks: clean.
+- Browser plugin, desktop `1280x720`: clean Home -> New evaluation -> Check setup -> Start ->
+  Review results -> Runs -> Compare, named run persisted, metric directions and denominators
+  verified, no horizontal overflow, empty fresh console logs.
+- Browser plugin, mobile `390x844`: sidebar closed, primary action visible before metrics, New
+  evaluation opened, Run name and Check setup present, no horizontal overflow, empty fresh logs.
+- Evidence screenshots are ephemeral: `/tmp/evalforge-phase2-desktop.png` and
+  `/tmp/evalforge-phase2-mobile.png`.
+- **Known validation gaps:** no live provider, hosted deployment, external PostgreSQL service, or
+  remote CI evidence; these are explicit inventory items rather than hidden failures.
+
+# 6. Debugging History & Failure Modes
+
+**Freshness: ✅ High — recently verified in this session.**
+
+- Streamlit primary buttons required an explicit descendant color rule; styling only the button
+  element left nested text dark.
+- A recent-run card looked correct in source but compressed status and action into fragments at
+  `1280px`; stacked status, combined details, and a short View action fixed it.
+- Streamlit did not reload imported modules reliably without Watchdog during this session; restart
+  the owned UI process before final visual proof after source edits.
+- The original browser tab accumulated expected WebSocket errors during intentional server
+  restarts. Final console evidence came only from new tabs opened after stable restarts.
+- A wide pairwise dataframe hid the most important outcome columns; a responsive card made shared
+  cases, delta, wins, ties, and regressions visible without scrolling.
+- The first mobile layout was technically responsive but buried the CTA under four metrics; moving
+  the action earlier fixed task priority.
+- Playwright dependency installation does not install a browser executable automatically. Run
+  `uv run --extra e2e playwright install chromium` on a fresh machine.
+- Broad label lookup matched both Run name help and input. Exact role-based locators are required.
+- Do not interpret unknown pricing as zero, demo latency as provider latency, or aggregate candidate
+  rows as paired case evidence.
+
+# 7. Established Processes & Effective Patterns
+
+**Freshness: ✅ High — recently verified in this session.**
+
+1. Read the newest repo handoff before discovery.
+2. Use the secret-safe wrapper for every terminal command; use URL-safe base64 argv for shell
+   metacharacters, environment assignment, or complex arguments.
+3. Write a concrete plan before multi-surface implementation.
+4. Add a failing behavior/contract test, implement the minimum truthful behavior, then refactor.
+5. Keep API analytics bounded to completed persisted evidence with explicit denominators.
+6. For UI changes, inspect the source and rendered page; source review alone is insufficient.
+7. Browser workflow: snapshot -> unique locator count -> interaction -> fresh snapshot -> screenshot
+   and logs -> overflow check.
+8. Restart the owned Streamlit process after module edits when the file watcher is unavailable, then
+   open a clean tab for final evidence.
+9. Separate deterministic/local/browser/E2E/hosted/provider/production proof layers.
+10. Run focused tests, full branch coverage, Ruff, mypy, Bandit, pip-audit, frozen sync, Playwright,
+    and whitespace checks.
+11. Stage exact files, commit locally, then write completion and handoff docs with the implementation
+    SHA.
+12. Stop only owned runtimes and verify their ports are clear.
+
+# 8. Risks, Technical Debt & Strict Preservation Rules
+
+**Freshness: ✅ High — recently verified in this session.**
+
+- **Do not touch:** unrelated projects formerly observed on ports `8000/8501`
+  (`codebase-intelligence`), `8012/8512` (`personal-rag-system`), or unrelated Compose
+  projects. Phase 2 used only `8027/8527`.
+- **Do not expose publicly:** current app is a loopback-first single-user tool with no tenant model.
+- **Do not scale workers:** in-process FIFO execution is not a distributed queue.
+- **Do not weaken evidence:** preserve immutable snapshots, applicability, metric direction,
+  denominators, pricing coverage, error sanitization, and provider-consent gates.
+- **Do not claim:** hosted, production, paid-provider, remote PostgreSQL, remote CI, or horizontal
+  proof.
+- **Do not add:** invented winners, confidence, decorative AI copy, gradients/glow, unknown-as-zero
+  pricing, or silent provider fallback.
+- **Current technical debt:** cold direct-deep-link bootstrap behavior; optional Watchdog for faster
+  development reload; optional live calibration/tracking integrations.
+- **Repository state:** no Git remote. Do not create or push one without user authorization.
+- **Local data:** browser/E2E proof created deterministic named runs in the ignored local SQLite
+  database; this is expected demo evidence, not a source change.
+
+# 9. Key Artifacts & References
+
+**Freshness: ✅ High — recently verified in this session.**
+
+- Phase 2 implementation commit:
+  `67db1d60fb89a8d92affe6af8acc8e77e04acdab`.
+- Phase 1 commits:
+  `3347260427f23ef42d56a6736a5eef0c07d83d9b` and
+  `5a116c1a4f93af7bdc7d7783db855d3b5c9f9165`.
+- Phase 2 plan:
+  `/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard/docs/superpowers/plans/2026-07-17-evalforge-phase-2-productization.md`.
+- Completion record:
+  `/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard/docs/llm-evaluation-dashboard/2026-07-17-phase-2-productization.md`.
+- Phase 1 handoff:
+  `/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard/docs/handoffs/2026-07-17-codex-evalforge-dashboard.handoff.mdc`.
+- Pre-compact snapshot:
+  `/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard/docs/handoffs/2026-07-17-codex-evalforge-phase-2.precompact.handoff.mdc`.
+- Final handoff: this file, mirrored under the global Beladed handoff directory.
+- Main code:
+  `src/evalforge/analytics.py`, `src/evalforge/dashboard/app.py`,
+  `src/evalforge/dashboard/components.py`, `src/evalforge/dashboard/theme.py`,
+  and `src/evalforge/dashboard/pages/{overview,run_evaluation,run_detail,compare}.py`.
+- Tests:
+  `tests/dashboard/test_*.py`, `tests/integration/test_analytics.py`,
+  `tests/e2e/test_dashboard_smoke.py`.
+- Ephemeral final screenshots:
+  `/tmp/evalforge-phase2-desktop.png`, `/tmp/evalforge-phase2-mobile.png`.
+- Exact local E2E ports: API `8027`, dashboard `8527`; both stopped at closeout.
+
+# 10. Next Steps & Prioritized Backlog
+
+**Freshness: ✅ High — recently verified in this session.**
+
+1. **P2 — Identity/public deployment:** design tenant scope before adding any hosted ingress; migrate
+   persistence and prove object-level authorization end to end.
+2. **P3 — Cold deep links:** decide whether bookmarks/direct subroutes are a requirement, then solve
+   Streamlit bootstrap behavior and add a cold-route Playwright matrix.
+3. **P3 — Durable execution:** add database leases or a broker before multi-worker/multi-host
+   execution.
+4. **P3 — External proof:** only after user-authorized publication, run GitHub Actions and the real
+   PostgreSQL job and archive immutable links.
+5. **P3 — Calibration:** with explicit provider/spend approval, run a bounded live evaluation and
+   human calibration before using scores as release gates.
+6. **P4 — Optional ecosystem export:** add versioned RAGAS/DeepEval/judge and LangSmith/W&B adapters
+   only if needed, preserving offline operation and secret/privacy boundaries.
+
+There is no blocker to running, demonstrating, or extending the completed local Phase 2 product.
+
+# 11. Continuation & Working Style Instructions
+
+**Freshness: ✅ High — recently verified in this session.**
+
+- Begin with this handoff and the completion record, then verify `git status --short`,
+  `git log -3 --oneline`, and `git remote -v`.
+- Continue from the current product rather than restarting design discovery.
+- Treat truthfulness as a product feature: inspect denominators, directions, evidence, and
+  applicability before changing presentation.
+- Preserve the neutral visual system and plain task language; render at desktop and mobile for every
+  material UI change.
+- Use Browser-plugin proof first and Playwright E2E for repository regression coverage.
+- Keep Cypress out of this Python/Streamlit project.
+- Use `rg` for discovery, `apply_patch` for edits, and the secret-safe terminal wrapper.
+- Do not perform provider calls, public deployment, remote creation/push, or live-money work without
+  explicit authority.
+- Keep local, container, external CI, hosted, provider, billable, and production evidence separate.
+- Refresh completion documentation and both handoff mirrors before ending future execution work.
+
+# 12. Confidence & Freshness Assessment
+
+**Freshness: ✅ High — recently verified in this session.**
+
+- Sections 1–7 and 9–11: ✅ High — implementation, automated checks, and Browser/Playwright evidence
+  were produced in this Phase 2 session.
+- Section 8 local risks and preservation rules: ✅ High — current source/docs/runtime state verified.
+- Identity, horizontal scale, external PostgreSQL/CI, and provider calibration inventory:
+  ⚠️ Medium for implementation details because they are deliberately unimplemented; the need and
+  proof boundary are current.
+- Cold direct-deep-link behavior: ⚠️ Medium — reproduced in Phase 1 and not claimed fixed in Phase 2;
+  revalidate on the next Streamlit/router change.
+- Hosted/production state: ❓ Low — not deployed and deliberately unverified.
+- Paid-provider behavior: ❓ Low — mocked contracts only; no authorized live call.
