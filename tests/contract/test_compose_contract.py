@@ -53,6 +53,15 @@ def test_compose_requires_oidc_before_using_routable_container_bindings() -> Non
     assert "EVALFORGE_DASHBOARD_HOST: 0.0.0.0" in compose
 
 
+def test_shared_identity_environment_passes_the_https_api_url() -> None:
+    compose = (ROOT / "compose.yaml").read_text()
+    identity_environment = compose.split("x-identity-environment:", maxsplit=1)[1].split(
+        "x-api-environment:", maxsplit=1
+    )[0]
+
+    assert "EVALFORGE_API_URL: ${EVALFORGE_PUBLIC_BASE_URL:?" in identity_environment
+
+
 def test_compose_mounts_a_required_streamlit_oidc_secret() -> None:
     compose = (ROOT / "compose.yaml").read_text()
     dashboard = compose.split("  dashboard:", maxsplit=1)[1].split("volumes:", maxsplit=1)[0]

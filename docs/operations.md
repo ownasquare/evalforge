@@ -189,13 +189,15 @@ EVALFORGE_OIDC_AUDIENCE=evalforge \
 EVALFORGE_OIDC_JWKS_URL=https://id.example/.well-known/jwks.json \
 EVALFORGE_PUBLIC_BASE_URL=https://evalforge.example \
 EVALFORGE_API_URL=https://evalforge.example \
-EVALFORGE_TRUSTED_HOSTS='["evalforge.example","127.0.0.1","api"]' \
+EVALFORGE_TRUSTED_HOSTS='["evalforge.example"]' \
 EVALFORGE_STREAMLIT_AUTH_SOURCE_FILE=/secure/evalforge-streamlit-auth.toml \
 docker compose config
 ```
 
 The dashboard uses `EVALFORGE_PUBLIC_BASE_URL` as its HTTPS API origin; bearer tokens are never sent
-to the plaintext Compose service name. This phase proves both image builds, fail-closed startup
+to the plaintext Compose service name. The shared identity environment also passes that URL to the
+API process so production OIDC validation cannot fall back to a loopback HTTP default. This phase
+proves both image builds, fail-closed startup
 contracts, and configuration validation. It does not claim a Compose runtime with a real IdP,
 hosted TLS, or production readback.
 
