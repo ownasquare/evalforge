@@ -28,6 +28,7 @@ from evalforge.dashboard.components import (
 from evalforge.dashboard.pages.common import client, list_payload, load_resource, option_map
 from evalforge.dashboard.state import (
     active_run_id,
+    can_edit,
     clear_active_run,
     navigate_to,
     select_run,
@@ -43,6 +44,12 @@ def render() -> None:
         "Choose a benchmark and candidates, then review the exact run before starting.",
         eyebrow="Evaluation setup",
     )
+    if not can_edit():
+        st.info(
+            "Viewer access is read-only. Ask a workspace editor to start an evaluation.",
+            icon=":material/visibility:",
+        )
+        return
     render_flash()
     _render_finished_run_action()
 
@@ -159,6 +166,11 @@ def render() -> None:
     case_count = _case_count(dataset)
     call_count = case_count * len(prompt_ids) * len(model_ids)
     max_calls = _limit(capabilities, "max_calls_per_run", "max_run_items")
+    server_cost_limit = _limit(
+        capabilities,
+        "max_estimated_cost_micro_usd_per_run",
+        "max_estimated_cost_micro_usd",
+    )
     real_enabled = _real_runs_enabled(capabilities)
 
     st.subheader("3. Check and start")
@@ -190,14 +202,44 @@ def render() -> None:
     if has_real_provider and not real_enabled:
         blockers.append("Real-provider runs are disabled by the backend.")
 
-    acknowledged = True
+    acknowledged_cost = True
+    acknowledged_transfer = True
+    spend_limit_micro_usd: int | None = None
     if has_real_provider:
-        acknowledged = st.checkbox(
-            "I understand this sends benchmark content to configured providers and may incur cost.",
+        st.markdown("**Provider approval**")
+        acknowledged_transfer = st.checkbox(
+            "I approve sending this benchmark's prompts, inputs, and context to the selected "
+            "external providers.",
             value=False,
         )
-        if not acknowledged:
-            blockers.append("Confirm the real-provider disclosure before submission.")
+        acknowledged_cost = st.checkbox(
+            "I understand external provider use may incur charges.",
+            value=False,
+        )
+        spend_limit_usd = st.number_input(
+            "Estimated-spend ceiling (USD)",
+            min_value=0.000001,
+            max_value=(server_cost_limit / 1_000_000 if server_cost_limit is not None else None),
+            value=None,
+            step=0.01,
+            format="%.6f",
+            help=(
+                "The server rejects the run when its known-price preflight estimate exceeds "
+                "this amount. This is not a final invoice or provider-side billing limit."
+            ),
+        )
+        if spend_limit_usd is not None:
+            spend_limit_micro_usd = max(1, round(float(spend_limit_usd) * 1_000_000))
+        if server_cost_limit is not None:
+            st.caption(
+                f"The server also caps estimated spend at {format_micro_usd(server_cost_limit)}."
+            )
+        if not acknowledged_transfer:
+            blockers.append("Approve the external data transfer before submission.")
+        if not acknowledged_cost:
+            blockers.append("Confirm the provider-cost disclosure before submission.")
+        if spend_limit_micro_usd is None:
+            blockers.append("Set an estimated-spend ceiling before submission.")
 
     for blocker in blockers:
         st.warning(blocker, icon=":material/warning:")
@@ -207,15 +249,19 @@ def render() -> None:
         "dataset_id": dataset_id,
         "prompt_ids": prompt_ids,
         "model_ids": model_ids,
-        "acknowledge_real_cost": bool(has_real_provider and acknowledged),
+        "acknowledge_real_cost": bool(has_real_provider and acknowledged_cost),
         "acknowledge_unknown_cost": False,
+        "acknowledge_external_data_transfer": bool(has_real_provider and acknowledged_transfer),
+        "spend_limit_micro_usd": spend_limit_micro_usd,
     }
     signature = (
         run_name.strip(),
         dataset_id,
         tuple(prompt_ids),
         tuple(model_ids),
-        bool(has_real_provider and acknowledged),
+        bool(has_real_provider and acknowledged_cost),
+        bool(has_real_provider and acknowledged_transfer),
+        spend_limit_micro_usd,
     )
     if st.button(
         "Check setup",

@@ -26,6 +26,7 @@ dependencies = [
   "pandas>=2.2,<3",
   "plotly>=6.3,<7",
   "prometheus-client>=0.22,<1",
+  "PyJWT[crypto]>=2.10,<3",
   "pydantic==2.13.4",
   "pydantic-settings==2.14.2",
   "python-multipart==0.0.32",
@@ -66,11 +67,12 @@ dev = [
 packages = ["src/evalforge"]
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-config --strict-markers -m 'not live and not e2e'"
+addopts = "-ra --strict-config --strict-markers --import-mode=importlib -m 'not live and not e2e'"
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
   "integration: exercises file-backed SQLite persistence",
+  "postgres: exercises an explicitly configured disposable PostgreSQL database",
   "live: makes explicitly opted-in provider calls",
   "ui: exercises the Streamlit presentation layer",
   "e2e: exercises running services through a browser",

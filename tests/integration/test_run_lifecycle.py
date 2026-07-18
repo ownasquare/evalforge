@@ -11,7 +11,7 @@ from evalforge.config import Settings
 from evalforge.database import SessionFactory, session_scope
 from evalforge.evaluation.adapters import AdapterRegistry
 from evalforge.evaluation.metrics import MetricRegistry
-from evalforge.evaluation.service import EvaluationService
+from evalforge.evaluation.service import CapabilityError, EvaluationService, LimitError
 from evalforge.evaluation.types import ApiMode as AdapterApiMode
 from evalforge.evaluation.types import EvaluationCase, GenerationRequest, GenerationResponse
 from evalforge.models import ResultStatus, RunStatus
@@ -23,6 +23,7 @@ from evalforge.schemas import (
     PromptTemplateCreate,
 )
 from evalforge.schemas import TestCaseCreate as CaseCreate
+from evalforge.security.permissions import WorkspaceContext
 
 
 class BlockingAdapter:
@@ -58,7 +59,9 @@ class ExplodingMetricRegistry(MetricRegistry):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_inflight_cancellation_finishes_without_duplicate_provider_calls(
-    settings: Settings, session_factory: SessionFactory
+    settings: Settings,
+    session_factory: SessionFactory,
+    workspace_context: WorkspaceContext,
 ) -> None:
     configured = settings.model_copy(
         update={
@@ -68,7 +71,7 @@ async def test_inflight_cancellation_finishes_without_duplicate_provider_calls(
         }
     )
     with session_scope(session_factory) as session:
-        repositories = Repositories(session)
+        repositories = Repositories(session, workspace_context)
         dataset = repositories.datasets.create(
             DatasetCreate(
                 name="Cancellation benchmark",
@@ -114,25 +117,53 @@ async def test_inflight_cancellation_finishes_without_duplicate_provider_calls(
         adapters=registry,
         metrics=MetricRegistry(),
     )
-    run = service.create_run(
-        EvaluationRunCreate(
-            dataset_id=UUID(dataset_id),
-            prompt_ids=[UUID(prompt_id)],
-            model_ids=[UUID(model_id)],
-            acknowledge_real_cost=True,
-        )
+    request = EvaluationRunCreate(
+        dataset_id=UUID(dataset_id),
+        prompt_ids=[UUID(prompt_id)],
+        model_ids=[UUID(model_id)],
     )
+    with pytest.raises(CapabilityError, match="cost acknowledgment"):
+        service.preflight(request, workspace_context)
+    cost_acknowledged = request.model_copy(update={"acknowledge_real_cost": True})
+    with pytest.raises(CapabilityError, match="data-transfer consent"):
+        service.preflight(cost_acknowledged, workspace_context)
+    transfer_acknowledged = cost_acknowledged.model_copy(
+        update={"acknowledge_external_data_transfer": True}
+    )
+    with pytest.raises(CapabilityError, match="spend ceiling"):
+        service.preflight(transfer_acknowledged, workspace_context)
+    with pytest.raises(LimitError, match="configured server cap"):
+        service.preflight(
+            transfer_acknowledged.model_copy(
+                update={
+                    "spend_limit_micro_usd": (configured.max_estimated_cost_micro_usd_per_run + 1)
+                }
+            ),
+            workspace_context,
+        )
+    with pytest.raises(LimitError, match="user-selected spend ceiling"):
+        service.preflight(
+            transfer_acknowledged.model_copy(update={"spend_limit_micro_usd": 1}),
+            workspace_context,
+        )
+
+    run = service.create_run(
+        transfer_acknowledged.model_copy(update={"spend_limit_micro_usd": 1_000_000}),
+        workspace_context,
+    )
+    assert run.preflight_snapshot["external_data_transfer_acknowledged"] is True
+    assert run.preflight_snapshot["spend_limit_micro_usd"] == 1_000_000
 
     execution = asyncio.create_task(service.execute_run(run.id))
     await asyncio.wait_for(adapter.started.wait(), timeout=2)
-    cancellation = service.cancel_run(run.id)
+    cancellation = service.cancel_run(run.id, workspace_context)
     assert cancellation.status is RunStatus.CANCEL_REQUESTED
     assert cancellation.candidates[0].status is RunStatus.CANCEL_REQUESTED
     adapter.release.set()
     await asyncio.wait_for(execution, timeout=2)
 
     with session_factory() as session:
-        completed = Repositories(session).runs.get(run.id, with_detail=True)
+        completed = Repositories(session, workspace_context).runs.get(run.id, with_detail=True)
         statuses = sorted(result.status.value for result in completed.results)
         completed_result = next(
             result for result in completed.results if result.status is ResultStatus.COMPLETED
@@ -150,10 +181,12 @@ async def test_inflight_cancellation_finishes_without_duplicate_provider_calls(
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_provider_evidence_survives_scoring_failure_and_is_counted_operationally(
-    settings: Settings, session_factory: SessionFactory
+    settings: Settings,
+    session_factory: SessionFactory,
+    workspace_context: WorkspaceContext,
 ) -> None:
     with session_scope(session_factory) as session:
-        repositories = Repositories(session)
+        repositories = Repositories(session, workspace_context)
         dataset = repositories.datasets.create(
             DatasetCreate(
                 name="Scoring failure benchmark",
@@ -197,15 +230,16 @@ async def test_provider_evidence_survives_scoring_failure_and_is_counted_operati
             dataset_id=UUID(dataset_id),
             prompt_ids=[UUID(prompt_id)],
             model_ids=[UUID(model_id)],
-        )
+        ),
+        workspace_context,
     )
 
     await service.execute_run(run.id)
 
     with session_factory() as session:
-        completed = Repositories(session).runs.get(run.id, with_detail=True)
+        completed = Repositories(session, workspace_context).runs.get(run.id, with_detail=True)
         result = completed.results[0]
-        comparison = build_run_comparison(session, run.id)
+        comparison = build_run_comparison(session, workspace_context.workspace_id, run.id)
         candidate = comparison["candidates"][0]
         assert completed.status is RunStatus.COMPLETED_WITH_ERRORS
         assert result.status is ResultStatus.ERROR
@@ -228,6 +262,7 @@ def test_provider_evidence_is_bounded_before_database_persistence(
     session_factory: SessionFactory,
     sample_result: Any,
     session: Any,
+    workspace_context: WorkspaceContext,
 ) -> None:
     session.add(sample_result)
     sample_result.status = ResultStatus.RUNNING
@@ -253,10 +288,12 @@ def test_provider_evidence_is_bounded_before_database_persistence(
         metadata={"usage_reported": True},
     )
 
-    service._persist_generation_evidence(sample_result.id, response)
+    claim = service.claim_next("bounded-evidence-test", run_id=sample_result.run_id)
+    assert claim is not None
+    service._persist_generation_evidence(sample_result.id, response, claim)
 
     with session_factory() as session:
-        persisted = Repositories(session).runs.get_result(sample_result.id)
+        persisted = Repositories(session, workspace_context).runs.get_result(sample_result.id)
         assert len(persisted.provider or "") <= 100
         assert len(persisted.model_name or "") <= 200
         assert len(persisted.request_id or "") <= 255

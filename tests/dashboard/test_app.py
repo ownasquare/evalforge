@@ -8,7 +8,7 @@ from streamlit.testing.v1 import AppTest
 
 from evalforge.dashboard.client import ApiClient, ApiError
 
-APP_PATH = Path(__file__).parents[2] / "src" / "evalforge" / "dashboard" / "app.py"
+APP_PATH = Path(__file__).parents[2] / "src" / "evalforge" / "streamlit_app.py"
 
 RUN_PAGE_SOURCE = """
 import streamlit as st
@@ -27,6 +27,39 @@ from evalforge.dashboard.state import initialize_state
 
 st.set_page_config(page_title="EvalForge assets test", layout="wide")
 initialize_state()
+render()
+"""
+
+VIEWER_RUN_PAGE_SOURCE = """
+import streamlit as st
+from evalforge.dashboard.auth import WorkspaceOption
+from evalforge.dashboard.pages.run_evaluation import render
+from evalforge.dashboard.state import initialize_state, select_workspace, sync_identity
+
+st.set_page_config(page_title="EvalForge viewer run test", layout="wide")
+initialize_state()
+sync_identity("viewer-fingerprint")
+select_workspace(WorkspaceOption("workspace-1", "Quality", "viewer"))
+render()
+"""
+
+VIEWER_ASSET_PAGE_SOURCE = """
+import streamlit as st
+from evalforge.dashboard.auth import WorkspaceOption
+from evalforge.dashboard.pages.test_cases import render
+from evalforge.dashboard.state import (
+    configure_client,
+    initialize_state,
+    select_workspace,
+    sync_identity,
+)
+
+st.set_page_config(page_title="EvalForge viewer assets test", layout="wide")
+initialize_state()
+sync_identity("viewer-fingerprint")
+workspace = WorkspaceOption("workspace-1", "Quality", "viewer")
+select_workspace(workspace)
+configure_client(identity_fingerprint="viewer-fingerprint", workspace_id=workspace.id)
 render()
 """
 
@@ -203,6 +236,8 @@ def test_run_page_submits_confirmed_demo_matrix(monkeypatch) -> None:
             "model_ids": ["model-1"],
             "acknowledge_real_cost": False,
             "acknowledge_unknown_cost": False,
+            "acknowledge_external_data_transfer": False,
+            "spend_limit_micro_usd": None,
         }
     ]
     assert preflight_payloads == [submitted[0]]
@@ -274,11 +309,15 @@ def test_real_run_requires_separate_unknown_pricing_acknowledgment(monkeypatch) 
         "Partner model pricing review"
     ).run()
     checkboxes = {checkbox.label: checkbox for checkbox in app.checkbox}
-    assert len(checkboxes) == 1
-    real_cost_ack = checkboxes[
-        "I understand this sends benchmark content to configured providers and may incur cost."
-    ]
-    real_cost_ack.check().run()
+    assert len(checkboxes) == 2
+    app.number_input[0].set_value(1.0).run()
+    checkboxes = {checkbox.label: checkbox for checkbox in app.checkbox}
+    checkboxes[
+        "I approve sending this benchmark's prompts, inputs, and context to the selected "
+        "external providers."
+    ].check().run()
+    checkboxes = {checkbox.label: checkbox for checkbox in app.checkbox}
+    checkboxes["I understand external provider use may incur charges."].check().run()
     buttons = {button.label: button for button in app.button}
     buttons["Check setup"].click().run()
 
@@ -308,6 +347,8 @@ def test_real_run_requires_separate_unknown_pricing_acknowledgment(monkeypatch) 
             "model_ids": ["model-real"],
             "acknowledge_real_cost": True,
             "acknowledge_unknown_cost": False,
+            "acknowledge_external_data_transfer": True,
+            "spend_limit_micro_usd": 1_000_000,
         }
     ]
     assert submitted == [
@@ -352,13 +393,17 @@ def test_real_run_with_complete_pricing_needs_only_general_cost_ack(monkeypatch)
     {field.label: field for field in app.text_input}["Run name"].set_value(
         "Priced partner review"
     ).run()
+    app.number_input[0].set_value(1.0).run()
     app.checkbox[0].check().run()
+    app.checkbox[1].check().run()
     buttons = {button.label: button for button in app.button}
     buttons["Check setup"].click().run()
 
     assert not app.exception
     assert [checkbox.label for checkbox in app.checkbox] == [
-        "I understand this sends benchmark content to configured providers and may incur cost."
+        "I approve sending this benchmark's prompts, inputs, and context to the selected "
+        "external providers.",
+        "I understand external provider use may incur charges.",
     ]
     buttons = {button.label: button for button in app.button}
     assert buttons["Start evaluation"].disabled is False
@@ -418,6 +463,8 @@ def test_run_page_invalidates_preflight_when_name_changes(monkeypatch) -> None:
             "model_ids": ["model-1"],
             "acknowledge_real_cost": False,
             "acknowledge_unknown_cost": False,
+            "acknowledge_external_data_transfer": False,
+            "spend_limit_micro_usd": None,
         }
     ]
 
@@ -461,6 +508,49 @@ def test_asset_page_uses_truthful_mutation_and_hash_copy(monkeypatch) -> None:
     code_values = [str(element.value) for element in app.code]
     assert any("template_hash" in value for value in code_values)
     assert not any("content_hash" in value for value in code_values)
+
+
+def test_viewer_deep_link_keeps_evaluation_builder_read_only() -> None:
+    app = AppTest.from_string(VIEWER_RUN_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    assert any("read-only" in str(message.value).lower() for message in app.info)
+    assert not any(button.label in {"Check setup", "Start evaluation"} for button in app.button)
+
+
+def test_viewer_benchmark_page_hides_mutations_but_keeps_export(monkeypatch) -> None:
+    routes: dict[str, Any] = {
+        "/api/v1/datasets": {"items": [{"id": "dataset-1", "name": "Support QA"}]},
+        "/api/v1/datasets/dataset-1": {
+            "id": "dataset-1",
+            "name": "Support QA",
+            "cases": [{"id": "case-1", "external_id": "refund", "input_text": "Refund?"}],
+        },
+        "/api/v1/prompts": {
+            "items": [
+                {
+                    "id": "prompt-1",
+                    "name": "Helpful",
+                    "system_template": "Be helpful.",
+                    "user_template": "{input}",
+                }
+            ]
+        },
+    }
+    monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes, []))
+    app = AppTest.from_string(VIEWER_ASSET_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    assert any("read-only" in str(message.value).lower() for message in app.info)
+    labels = {button.label for button in app.button}
+    assert "Prepare export" in labels
+    assert labels.isdisjoint(
+        {"Create dataset", "Add test case", "Save changes", "Import into dataset", "Create prompt"}
+    )
 
 
 def _fake_transport(

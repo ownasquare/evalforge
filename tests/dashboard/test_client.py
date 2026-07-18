@@ -211,20 +211,149 @@ def test_case_import_invalidates_cached_dataset_detail() -> None:
     assert refreshed["cases"] == [{"id": "case-1"}]
 
 
-def test_client_exports_run_evidence_in_json_and_csv() -> None:
-    requests: list[tuple[str, str, str | None]] = []
+def test_client_exports_run_evidence_in_raw_and_versioned_formats() -> None:
+    requests: list[tuple[str, str, str | None, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        requests.append((request.method, request.url.path, request.url.params.get("format")))
+        requests.append(
+            (
+                request.method,
+                request.url.path,
+                request.url.params.get("format"),
+                request.url.params.get("disclosure_profile"),
+            )
+        )
         return httpx.Response(200, content=b"evidence")
 
     with ApiClient("http://api", transport=httpx.MockTransport(handler)) as client:
         json_export = client.export_run("run-1", export_format="json")
         csv_export = client.export_run("run-1", export_format="csv")
+        package_export = client.export_run(
+            "run-1",
+            export_format="package",
+            disclosure_profile="full_evidence",
+        )
 
     assert json_export == b"evidence"
     assert csv_export == b"evidence"
+    assert package_export == b"evidence"
     assert requests == [
-        ("GET", "/api/v1/runs/run-1/export", "json"),
-        ("GET", "/api/v1/runs/run-1/export", "csv"),
+        ("GET", "/api/v1/runs/run-1/export", "json", "content_redacted"),
+        ("GET", "/api/v1/runs/run-1/export", "csv", "content_redacted"),
+        ("GET", "/api/v1/runs/run-1/export", "package", "full_evidence"),
     ]
+
+
+def test_client_rejects_unknown_export_disclosure_profile() -> None:
+    with (
+        ApiClient(
+            "http://api", transport=httpx.MockTransport(lambda _: httpx.Response(200))
+        ) as client,
+        pytest.raises(ValueError, match="disclosure profile"),
+    ):
+        client.export_run(
+            "run-1",
+            export_format="package",
+            disclosure_profile="send_everything",
+        )
+
+
+def test_client_attaches_identity_and_workspace_headers_without_exposing_token() -> None:
+    observed_headers: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed_headers.update(request.headers)
+        return httpx.Response(200, json={"user": {"display_name": "Morgan"}})
+
+    with ApiClient(
+        "http://api",
+        access_token="private-access-token",
+        workspace_id="workspace-1",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        assert client.session() == {"user": {"display_name": "Morgan"}}
+        representation = repr(client)
+
+    assert observed_headers["authorization"] == "Bearer private-access-token"
+    assert observed_headers["x-evalforge-workspace-id"] == "workspace-1"
+    assert "private-access-token" not in representation
+    assert "private-access-token" not in str(client.identity_fingerprint)
+
+
+def test_client_partitions_cache_by_fingerprint_and_workspace() -> None:
+    client = ApiClient(
+        "http://api",
+        access_token="private-access-token",
+        workspace_id="workspace-1",
+    )
+
+    key = client._cache_key("/api/v1/runs", {"page": 1})
+
+    assert client.identity_fingerprint in key
+    assert "workspace-1" in key
+    assert "private-access-token" not in repr(key)
+    client.close()
+
+
+def test_client_resets_identity_on_401_but_not_403() -> None:
+    unauthorized_events: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        status = 401 if request.url.path.endswith("session") else 403
+        return httpx.Response(status, json={"detail": "Access denied"})
+
+    with ApiClient(
+        "http://api",
+        access_token="private-access-token",
+        workspace_id="workspace-1",
+        transport=httpx.MockTransport(handler),
+        max_read_attempts=1,
+        on_unauthorized=lambda: unauthorized_events.append("reset"),
+    ) as client:
+        with pytest.raises(ApiError) as unauthorized:
+            client.session()
+        with pytest.raises(ApiError) as forbidden:
+            client.workspaces()
+
+    assert unauthorized.value.status_code == 401
+    assert forbidden.value.status_code == 403
+    assert unauthorized_events == ["reset"]
+
+
+def test_client_redacts_echoed_bearer_token_from_api_errors() -> None:
+    token = "private-access-token"
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": f"Rejected Bearer {token}"})
+
+    with (
+        ApiClient(
+            "http://api",
+            access_token=token,
+            transport=httpx.MockTransport(handler),
+            max_read_attempts=1,
+        ) as client,
+        pytest.raises(ApiError) as captured,
+    ):
+        client.session()
+
+    assert token not in str(captured.value)
+    assert "[credential]" in str(captured.value)
+
+
+def test_client_treats_a_missing_live_token_as_reauthentication() -> None:
+    unauthorized_events: list[str] = []
+    client = ApiClient(
+        "http://api",
+        access_token_provider=lambda: None,
+        identity_fingerprint="known-fingerprint",
+        on_unauthorized=lambda: unauthorized_events.append("reset"),
+    )
+
+    with pytest.raises(ApiError) as captured:
+        client.session()
+
+    assert captured.value.status_code == 401
+    assert captured.value.code == "reauthentication_required"
+    assert unauthorized_events == ["reset"]
+    client.close()

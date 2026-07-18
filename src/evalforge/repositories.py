@@ -41,6 +41,7 @@ from evalforge.schemas import (
     TestCaseUpdate,
     extract_template_variables,
 )
+from evalforge.security.permissions import WorkspaceContext
 
 ModelT = TypeVar("ModelT")
 
@@ -139,14 +140,25 @@ def _dataset_snapshot(dataset: Dataset) -> dict[str, Any]:
 
 
 class BaseRepository:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, context: WorkspaceContext) -> None:
         self.session = session
+        self.context: WorkspaceContext | None = context
+
+    @property
+    def workspace_id(self) -> str:
+        if self.context is None:
+            raise RuntimeError("a user-facing repository requires workspace context")
+        return self.context.workspace_id
+
+    def _scope(self, model: Any) -> tuple[Any, ...]:
+        return () if self.context is None else (model.workspace_id == self.workspace_id,)
 
 
 class DatasetRepository(BaseRepository):
     def create(self, data: DatasetCreate) -> Dataset:
         cases = [
             TestCase(
+                workspace_id=self.workspace_id,
                 external_id=case.external_id,
                 position=case.position,
                 input_text=case.input_text,
@@ -172,6 +184,7 @@ class DatasetRepository(BaseRepository):
             ],
         }
         dataset = Dataset(
+            workspace_id=self.workspace_id,
             name=data.name,
             description=data.description,
             version=data.version,
@@ -184,7 +197,7 @@ class DatasetRepository(BaseRepository):
         return dataset
 
     def get(self, dataset_id: str, *, with_cases: bool = False) -> Dataset:
-        statement = select(Dataset).where(Dataset.id == dataset_id)
+        statement = select(Dataset).where(Dataset.id == dataset_id, *self._scope(Dataset))
         if with_cases:
             statement = statement.options(selectinload(Dataset.cases))
         dataset = self.session.scalar(statement)
@@ -194,9 +207,18 @@ class DatasetRepository(BaseRepository):
 
     def list(self, *, page: int = 1, limit: int = 50) -> tuple[list[Dataset], int]:
         offset = (page - 1) * limit
-        total = self.session.scalar(select(func.count()).select_from(Dataset)) or 0
+        total = (
+            self.session.scalar(
+                select(func.count()).select_from(Dataset).where(*self._scope(Dataset))
+            )
+            or 0
+        )
         rows = self.session.scalars(
-            select(Dataset).order_by(Dataset.created_at.desc()).offset(offset).limit(limit)
+            select(Dataset)
+            .where(*self._scope(Dataset))
+            .order_by(Dataset.created_at.desc())
+            .offset(offset)
+            .limit(limit)
         ).all()
         return list(rows), total
 
@@ -213,6 +235,7 @@ class DatasetRepository(BaseRepository):
         self._ensure_mutable(dataset_id)
         dataset = self.get(dataset_id, with_cases=True)
         case = TestCase(
+            workspace_id=self.workspace_id,
             dataset=dataset,
             external_id=data.external_id,
             position=data.position,
@@ -233,7 +256,9 @@ class DatasetRepository(BaseRepository):
         return case
 
     def get_case(self, case_id: str) -> TestCase:
-        case = self.session.get(TestCase, case_id)
+        case = self.session.scalar(
+            select(TestCase).where(TestCase.id == case_id, *self._scope(TestCase))
+        )
         if case is None:
             raise NotFoundError(f"test case {case_id} was not found")
         return case
@@ -263,7 +288,7 @@ class DatasetRepository(BaseRepository):
         if self.session.scalar(
             select(func.count())
             .select_from(EvaluationResult)
-            .where(EvaluationResult.test_case_id == case_id)
+            .where(EvaluationResult.test_case_id == case_id, *self._scope(EvaluationResult))
         ):
             raise ConflictError("test case is referenced by evaluation provenance")
         dataset = self.get(case.dataset_id, with_cases=True)
@@ -279,7 +304,7 @@ class DatasetRepository(BaseRepository):
         if self.session.scalar(
             select(func.count())
             .select_from(EvaluationRun)
-            .where(EvaluationRun.dataset_id == dataset_id)
+            .where(EvaluationRun.dataset_id == dataset_id, *self._scope(EvaluationRun))
         ):
             raise ConflictError("dataset is referenced by immutable evaluation runs")
         self.session.delete(dataset)
@@ -304,7 +329,7 @@ class DatasetRepository(BaseRepository):
         if self.session.scalar(
             select(func.count())
             .select_from(EvaluationRun)
-            .where(EvaluationRun.dataset_id == dataset_id)
+            .where(EvaluationRun.dataset_id == dataset_id, *self._scope(EvaluationRun))
         ):
             raise ConflictError(
                 "dataset version is referenced by an evaluation run; create a new version"
@@ -318,6 +343,7 @@ class PromptTemplateRepository(BaseRepository):
             | extract_template_variables(data.user_template)
         )
         prompt = PromptTemplate(
+            workspace_id=self.workspace_id,
             name=data.name,
             description=data.description,
             version=data.version,
@@ -333,16 +359,26 @@ class PromptTemplateRepository(BaseRepository):
         return prompt
 
     def get(self, prompt_id: str) -> PromptTemplate:
-        prompt = self.session.get(PromptTemplate, prompt_id)
+        prompt = self.session.scalar(
+            select(PromptTemplate).where(
+                PromptTemplate.id == prompt_id, *self._scope(PromptTemplate)
+            )
+        )
         if prompt is None:
             raise NotFoundError(f"prompt template {prompt_id} was not found")
         return prompt
 
     def list(self, *, page: int = 1, limit: int = 50) -> tuple[list[PromptTemplate], int]:
         offset = (page - 1) * limit
-        total = self.session.scalar(select(func.count()).select_from(PromptTemplate)) or 0
+        total = (
+            self.session.scalar(
+                select(func.count()).select_from(PromptTemplate).where(*self._scope(PromptTemplate))
+            )
+            or 0
+        )
         rows = self.session.scalars(
             select(PromptTemplate)
+            .where(*self._scope(PromptTemplate))
             .order_by(PromptTemplate.name, PromptTemplate.version.desc())
             .offset(offset)
             .limit(limit)
@@ -353,7 +389,7 @@ class PromptTemplateRepository(BaseRepository):
         if self.session.scalar(
             select(func.count())
             .select_from(RunCandidate)
-            .where(RunCandidate.prompt_template_id == prompt_id)
+            .where(RunCandidate.prompt_template_id == prompt_id, *self._scope(RunCandidate))
         ):
             raise ConflictError(
                 "prompt version is referenced by an evaluation run; create a new version"
@@ -374,7 +410,7 @@ class PromptTemplateRepository(BaseRepository):
         if self.session.scalar(
             select(func.count())
             .select_from(RunCandidate)
-            .where(RunCandidate.prompt_template_id == prompt_id)
+            .where(RunCandidate.prompt_template_id == prompt_id, *self._scope(RunCandidate))
         ):
             raise ConflictError("prompt template is referenced by immutable run candidates")
         self.session.delete(prompt)
@@ -384,6 +420,7 @@ class PromptTemplateRepository(BaseRepository):
 class ModelProfileRepository(BaseRepository):
     def create(self, data: ModelProfileCreate) -> ModelProfile:
         profile = ModelProfile(
+            workspace_id=self.workspace_id,
             name=data.name,
             description=data.description,
             version=data.version,
@@ -408,7 +445,9 @@ class ModelProfileRepository(BaseRepository):
         return profile
 
     def get(self, profile_id: str, *, require_enabled: bool = False) -> ModelProfile:
-        profile = self.session.get(ModelProfile, profile_id)
+        profile = self.session.scalar(
+            select(ModelProfile).where(ModelProfile.id == profile_id, *self._scope(ModelProfile))
+        )
         if profile is None:
             raise NotFoundError(f"model profile {profile_id} was not found")
         if require_enabled and not profile.enabled:
@@ -417,9 +456,15 @@ class ModelProfileRepository(BaseRepository):
 
     def list(self, *, page: int = 1, limit: int = 50) -> tuple[list[ModelProfile], int]:
         offset = (page - 1) * limit
-        total = self.session.scalar(select(func.count()).select_from(ModelProfile)) or 0
+        total = (
+            self.session.scalar(
+                select(func.count()).select_from(ModelProfile).where(*self._scope(ModelProfile))
+            )
+            or 0
+        )
         rows = self.session.scalars(
             select(ModelProfile)
+            .where(*self._scope(ModelProfile))
             .order_by(ModelProfile.name, ModelProfile.version.desc())
             .offset(offset)
             .limit(limit)
@@ -432,7 +477,7 @@ class ModelProfileRepository(BaseRepository):
         if set(updates) - {"enabled"} and self.session.scalar(
             select(func.count())
             .select_from(RunCandidate)
-            .where(RunCandidate.model_profile_id == profile_id)
+            .where(RunCandidate.model_profile_id == profile_id, *self._scope(RunCandidate))
         ):
             raise ConflictError(
                 "model version is referenced by an evaluation run; create a new version"
@@ -454,7 +499,7 @@ class ModelProfileRepository(BaseRepository):
         if self.session.scalar(
             select(func.count())
             .select_from(RunCandidate)
-            .where(RunCandidate.model_profile_id == profile_id)
+            .where(RunCandidate.model_profile_id == profile_id, *self._scope(RunCandidate))
         ):
             raise ConflictError("model profile is referenced by immutable run candidates")
         self.session.delete(profile)
@@ -464,7 +509,9 @@ class ModelProfileRepository(BaseRepository):
 class EvaluationRunRepository(BaseRepository):
     def find_by_idempotency_key(self, key: str) -> EvaluationRun | None:
         return self.session.scalar(
-            select(EvaluationRun).where(EvaluationRun.idempotency_key == key)
+            select(EvaluationRun).where(
+                EvaluationRun.idempotency_key == key, *self._scope(EvaluationRun)
+            )
         )
 
     def create(
@@ -477,6 +524,8 @@ class EvaluationRunRepository(BaseRepository):
         prompts_by_id: dict[str, PromptTemplate] | None = None,
         models_by_id: dict[str, ModelProfile] | None = None,
         preflight_snapshot: dict[str, Any] | None = None,
+        requested_by_user_id: str | None = None,
+        requested_by: str | None = None,
     ) -> EvaluationRun:
         request_payload = data.model_dump(mode="json", exclude={"idempotency_key"})
         request_hash = canonical_json_hash(request_payload)
@@ -488,7 +537,12 @@ class EvaluationRunRepository(BaseRepository):
                 return existing
 
         if dataset is None:
-            dataset = DatasetRepository(self.session).get(str(data.dataset_id), with_cases=True)
+            context = self.context
+            if context is None:
+                raise RuntimeError("system repositories cannot create user-requested runs")
+            dataset = DatasetRepository(self.session, context).get(
+                str(data.dataset_id), with_cases=True
+            )
         if not dataset.cases:
             raise ValidationError("an evaluation run requires at least one test case")
 
@@ -497,7 +551,8 @@ class EvaluationRunRepository(BaseRepository):
                 prompt.id: prompt
                 for prompt in self.session.scalars(
                     select(PromptTemplate).where(
-                        PromptTemplate.id.in_([str(item) for item in data.prompt_ids])
+                        PromptTemplate.id.in_([str(item) for item in data.prompt_ids]),
+                        *self._scope(PromptTemplate),
                     )
                 )
             }
@@ -506,7 +561,8 @@ class EvaluationRunRepository(BaseRepository):
                 profile.id: profile
                 for profile in self.session.scalars(
                     select(ModelProfile).where(
-                        ModelProfile.id.in_([str(item) for item in data.model_ids])
+                        ModelProfile.id.in_([str(item) for item in data.model_ids]),
+                        *self._scope(ModelProfile),
                     )
                 )
             }
@@ -524,6 +580,12 @@ class EvaluationRunRepository(BaseRepository):
         )
         if contains_real_provider and not data.acknowledge_real_cost:
             raise ValidationError("real-provider candidates require acknowledge_real_cost=true")
+        if contains_real_provider and not data.acknowledge_external_data_transfer:
+            raise ValidationError(
+                "real-provider candidates require acknowledge_external_data_transfer=true"
+            )
+        if contains_real_provider and data.spend_limit_micro_usd is None:
+            raise ValidationError("real-provider candidates require spend_limit_micro_usd")
         contains_unknown_pricing = any(
             models_by_id[str(item)].api_mode.value != "deterministic"
             and (
@@ -534,6 +596,14 @@ class EvaluationRunRepository(BaseRepository):
         )
         if contains_unknown_pricing and not data.acknowledge_unknown_cost:
             raise ValidationError("unknown-price candidates require acknowledge_unknown_cost=true")
+        estimated_cost = (preflight_snapshot or {}).get("estimated_known_cost_micro_usd")
+        if (
+            contains_real_provider
+            and isinstance(estimated_cost, int)
+            and data.spend_limit_micro_usd is not None
+            and estimated_cost > data.spend_limit_micro_usd
+        ):
+            raise ValidationError("known-cost estimate exceeds spend_limit_micro_usd")
 
         metric_rows = [metric.model_dump(mode="json") for metric in data.metrics if metric.enabled]
         metric_snapshot = {
@@ -543,6 +613,7 @@ class EvaluationRunRepository(BaseRepository):
             "configuration_hash": canonical_json_hash(metric_rows),
         }
         run = EvaluationRun(
+            workspace_id=self.workspace_id,
             name=data.name,
             dataset=dataset,
             dataset_snapshot=deepcopy(_dataset_snapshot(dataset)),
@@ -551,7 +622,10 @@ class EvaluationRunRepository(BaseRepository):
             preflight_snapshot=deepcopy(preflight_snapshot or {}),
             application_version=application_version,
             executor_type=executor_type,
-            requested_by=data.requested_by,
+            requested_by=requested_by or self.context.display_name if self.context else None,
+            requested_by_user_id=(
+                requested_by_user_id or (self.context.user_id if self.context else None)
+            ),
             idempotency_key=data.idempotency_key,
             request_hash=request_hash,
             acknowledge_real_cost=data.acknowledge_real_cost,
@@ -576,6 +650,7 @@ class EvaluationRunRepository(BaseRepository):
                     "generation_parameters": generation_parameters,
                 }
                 candidate = RunCandidate(
+                    workspace_id=self.workspace_id,
                     run=run,
                     prompt_template=prompt,
                     model_profile=model,
@@ -602,7 +677,9 @@ class EvaluationRunRepository(BaseRepository):
         with_detail: bool = False,
         with_candidates: bool = False,
     ) -> EvaluationRun:
-        statement = select(EvaluationRun).where(EvaluationRun.id == run_id)
+        statement = select(EvaluationRun).where(
+            EvaluationRun.id == run_id, *self._scope(EvaluationRun)
+        )
         if with_detail:
             statement = statement.options(
                 selectinload(EvaluationRun.candidates),
@@ -626,7 +703,9 @@ class EvaluationRunRepository(BaseRepository):
         limit: int = 50,
         status: RunStatus | None = None,
     ) -> tuple[list[EvaluationRun], int]:
-        filters = () if status is None else (EvaluationRun.status == status,)
+        filters = self._scope(EvaluationRun) + (
+            () if status is None else (EvaluationRun.status == status,)
+        )
         offset = (page - 1) * limit
         total = (
             self.session.scalar(select(func.count()).select_from(EvaluationRun).where(*filters))
@@ -648,9 +727,8 @@ class EvaluationRunRepository(BaseRepository):
     def list_results(
         self, run_id: str, *, page: int = 1, limit: int = 100
     ) -> tuple[list_type[EvaluationResult], int]:
-        if self.session.get(EvaluationRun, run_id) is None:
-            raise NotFoundError(f"evaluation run {run_id} was not found")
-        filters = (EvaluationResult.run_id == run_id,)
+        self.get(run_id)
+        filters = (EvaluationResult.run_id == run_id, *self._scope(EvaluationResult))
         total = (
             self.session.scalar(select(func.count()).select_from(EvaluationResult).where(*filters))
             or 0
@@ -665,7 +743,9 @@ class EvaluationRunRepository(BaseRepository):
         return list(rows), total
 
     def get_candidate(self, candidate_id: str) -> RunCandidate:
-        candidate = self.session.get(RunCandidate, candidate_id)
+        candidate = self.session.scalar(
+            select(RunCandidate).where(RunCandidate.id == candidate_id, *self._scope(RunCandidate))
+        )
         if candidate is None:
             raise NotFoundError(f"run candidate {candidate_id} was not found")
         return candidate
@@ -674,15 +754,25 @@ class EvaluationRunRepository(BaseRepository):
         candidate = self.get_candidate(result.run_candidate_id)
         if candidate.run_id != result.run_id:
             raise ValidationError("result run_id does not match its candidate")
-        case = self.session.get(TestCase, result.test_case_id)
+        case = self.session.scalar(
+            select(TestCase).where(TestCase.id == result.test_case_id, *self._scope(TestCase))
+        )
         if case is None:
             raise NotFoundError(f"test case {result.test_case_id} was not found")
+        if self.context is not None:
+            result.workspace_id = self.workspace_id
+        elif result.workspace_id != candidate.workspace_id:
+            raise ValidationError("result workspace does not match its candidate")
         self.session.add(result)
         _flush(self.session, "evaluation result")
         return result
 
     def get_result(self, result_id: str) -> EvaluationResult:
-        result = self.session.get(EvaluationResult, result_id)
+        result = self.session.scalar(
+            select(EvaluationResult).where(
+                EvaluationResult.id == result_id, *self._scope(EvaluationResult)
+            )
+        )
         if result is None:
             raise NotFoundError(f"evaluation result {result_id} was not found")
         return result
@@ -737,7 +827,8 @@ class EvaluationRunRepository(BaseRepository):
         count = 0
         runs = self.session.scalars(
             select(EvaluationRun).where(
-                EvaluationRun.status.in_([RunStatus.RUNNING, RunStatus.CANCEL_REQUESTED])
+                EvaluationRun.status.in_([RunStatus.RUNNING, RunStatus.CANCEL_REQUESTED]),
+                *self._scope(EvaluationRun),
             )
         ).all()
         for run in runs:
@@ -751,6 +842,7 @@ class EvaluationRunRepository(BaseRepository):
             self.session.scalars(
                 select(RunCandidate).where(
                     RunCandidate.run_id.in_(abandoned_run_ids),
+                    *self._scope(RunCandidate),
                     RunCandidate.status.in_(
                         [RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.CANCEL_REQUESTED]
                     ),
@@ -766,6 +858,7 @@ class EvaluationRunRepository(BaseRepository):
             self.session.scalars(
                 select(EvaluationResult).where(
                     EvaluationResult.run_id.in_(abandoned_run_ids),
+                    *self._scope(EvaluationResult),
                     EvaluationResult.status.in_([ResultStatus.RUNNING, ResultStatus.QUEUED]),
                 )
             ).all()
@@ -806,7 +899,9 @@ class EvaluationRunRepository(BaseRepository):
                     ResultStatus(result_status)
                 ] = int(result_count)
             all_candidates = self.session.scalars(
-                select(RunCandidate).where(RunCandidate.run_id.in_(abandoned_run_ids))
+                select(RunCandidate).where(
+                    RunCandidate.run_id.in_(abandoned_run_ids), *self._scope(RunCandidate)
+                )
             ).all()
             for candidate in all_candidates:
                 candidate_counts = counts.get((candidate.run_id, candidate.id), {})
@@ -853,11 +948,19 @@ class EvaluationRunRepository(BaseRepository):
         return count
 
 
+class SystemEvaluationRunRepository(EvaluationRunRepository):
+    """System-only execution access; never inject this class into user routes."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+        self.context = None
+
+
 class Repositories:
     """Convenience bundle sharing one caller-owned Session."""
 
-    def __init__(self, session: Session) -> None:
-        self.datasets = DatasetRepository(session)
-        self.prompts = PromptTemplateRepository(session)
-        self.models = ModelProfileRepository(session)
-        self.runs = EvaluationRunRepository(session)
+    def __init__(self, session: Session, context: WorkspaceContext) -> None:
+        self.datasets = DatasetRepository(session, context)
+        self.prompts = PromptTemplateRepository(session, context)
+        self.models = ModelProfileRepository(session, context)
+        self.runs = EvaluationRunRepository(session, context)

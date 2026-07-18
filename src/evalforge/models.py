@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -24,6 +25,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
     inspect,
+    text,
 )
 from sqlalchemy import (
     Enum as SQLAlchemyEnum,
@@ -113,6 +115,11 @@ class MetricApplicability(StrEnum):
     ERROR = "error"
 
 
+class RecordStatus(StrEnum):
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+
+
 class InvalidStateTransition(ValueError):
     """Raised when an evaluator attempts an invalid lifecycle transition."""
 
@@ -197,12 +204,128 @@ class TimestampMixin:
     )
 
 
-class Dataset(UuidPrimaryKeyMixin, TimestampMixin, Base):
+class Workspace(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "workspaces"
+    __table_args__ = (Index("ix_workspaces_status_name", "status", "name"),)
+
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[RecordStatus] = mapped_column(
+        SQLAlchemyEnum(
+            RecordStatus,
+            values_callable=_enum_values,
+            native_enum=False,
+            create_constraint=True,
+            name="workspace_status",
+        ),
+        default=RecordStatus.ACTIVE,
+        nullable=False,
+    )
+
+    memberships: Mapped[list[WorkspaceMembership]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class User(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("issuer", "subject", name="uq_users_issuer_subject"),
+        Index("ix_users_status_created", "status", "created_at"),
+    )
+
+    issuer: Mapped[str] = mapped_column(String(500), nullable=False)
+    subject: Mapped[str] = mapped_column(String(500), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(200))
+    email: Mapped[str | None] = mapped_column(String(320))
+    status: Mapped[RecordStatus] = mapped_column(
+        SQLAlchemyEnum(
+            RecordStatus,
+            values_callable=_enum_values,
+            native_enum=False,
+            create_constraint=True,
+            name="user_status",
+        ),
+        default=RecordStatus.ACTIVE,
+        nullable=False,
+    )
+
+    memberships: Mapped[list[WorkspaceMembership]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class WorkspaceMembership(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "workspace_memberships"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "user_id", name="uq_memberships_workspace_user"),
+        Index("ix_memberships_user_status", "user_id", "status"),
+    )
+
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[RecordStatus] = mapped_column(
+        SQLAlchemyEnum(
+            RecordStatus,
+            values_callable=_enum_values,
+            native_enum=False,
+            create_constraint=True,
+            name="membership_status",
+        ),
+        default=RecordStatus.ACTIVE,
+        nullable=False,
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="memberships")
+    user: Mapped[User] = relationship(back_populates="memberships")
+
+
+class AuditEvent(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_workspace_created", "workspace_id", "created_at"),
+        Index("ix_audit_events_actor_created", "actor_user_id", "created_at"),
+    )
+
+    workspace_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="SET NULL")
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    resource_id: Mapped[str | None] = mapped_column(String(100))
+    outcome: Mapped[str] = mapped_column(String(30), nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(255))
+    metadata_json: Mapped[JSONDict] = mapped_column(
+        "metadata", MutableDict.as_mutable(JSON), default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class WorkspaceScopedMixin:
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False
+    )
+
+
+class Dataset(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "datasets"
     __table_args__ = (
-        UniqueConstraint("name", "version", name="uq_datasets_name_version"),
+        UniqueConstraint("workspace_id", "id", name="uq_datasets_workspace_id"),
+        UniqueConstraint(
+            "workspace_id", "name", "version", name="uq_datasets_workspace_name_version"
+        ),
         CheckConstraint("version >= 1", name="ck_datasets_version_positive"),
-        Index("ix_datasets_created_at", "created_at"),
+        Index("ix_datasets_workspace_created", "workspace_id", "created_at"),
     )
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -218,17 +341,40 @@ class Dataset(UuidPrimaryKeyMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="TestCase.position",
+        primaryjoin="Dataset.id == TestCase.dataset_id",
+        foreign_keys="TestCase.dataset_id",
     )
-    runs: Mapped[list[EvaluationRun]] = relationship(back_populates="dataset")
+    runs: Mapped[list[EvaluationRun]] = relationship(
+        back_populates="dataset",
+        primaryjoin="Dataset.id == EvaluationRun.dataset_id",
+        foreign_keys="EvaluationRun.dataset_id",
+    )
 
 
-class TestCase(UuidPrimaryKeyMixin, TimestampMixin, Base):
+class TestCase(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "test_cases"
     __table_args__ = (
-        UniqueConstraint("dataset_id", "external_id", name="uq_test_cases_dataset_external"),
-        UniqueConstraint("dataset_id", "position", name="uq_test_cases_dataset_position"),
+        UniqueConstraint("workspace_id", "id", name="uq_test_cases_workspace_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "dataset_id",
+            "external_id",
+            name="uq_test_cases_workspace_dataset_external",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "dataset_id",
+            "position",
+            name="uq_test_cases_workspace_dataset_position",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "dataset_id"],
+            ["datasets.workspace_id", "datasets.id"],
+            name="fk_test_cases_workspace_dataset",
+            ondelete="CASCADE",
+        ),
         CheckConstraint("position >= 0", name="ck_test_cases_position_nonnegative"),
-        Index("ix_test_cases_dataset_id", "dataset_id"),
+        Index("ix_test_cases_workspace_dataset", "workspace_id", "dataset_id"),
         Index("ix_test_cases_case_hash", "case_hash"),
     )
 
@@ -257,8 +403,16 @@ class TestCase(UuidPrimaryKeyMixin, TimestampMixin, Base):
     )
     case_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
-    dataset: Mapped[Dataset] = relationship(back_populates="cases")
-    results: Mapped[list[EvaluationResult]] = relationship(back_populates="test_case")
+    dataset: Mapped[Dataset] = relationship(
+        back_populates="cases",
+        primaryjoin="Dataset.id == TestCase.dataset_id",
+        foreign_keys=[dataset_id],
+    )
+    results: Mapped[list[EvaluationResult]] = relationship(
+        back_populates="test_case",
+        primaryjoin="TestCase.id == EvaluationResult.test_case_id",
+        foreign_keys="EvaluationResult.test_case_id",
+    )
 
     def snapshot(self) -> JSONDict:
         return {
@@ -277,12 +431,18 @@ class TestCase(UuidPrimaryKeyMixin, TimestampMixin, Base):
         }
 
 
-class PromptTemplate(UuidPrimaryKeyMixin, TimestampMixin, Base):
+class PromptTemplate(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "prompt_templates"
     __table_args__ = (
-        UniqueConstraint("name", "version", name="uq_prompt_templates_name_version"),
+        UniqueConstraint("workspace_id", "id", name="uq_prompt_templates_workspace_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "name",
+            "version",
+            name="uq_prompt_templates_workspace_name_version",
+        ),
         CheckConstraint("version >= 1", name="ck_prompt_templates_version_positive"),
-        Index("ix_prompt_templates_created_at", "created_at"),
+        Index("ix_prompt_templates_workspace_created", "workspace_id", "created_at"),
     )
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -298,7 +458,11 @@ class PromptTemplate(UuidPrimaryKeyMixin, TimestampMixin, Base):
         "metadata", MutableDict.as_mutable(JSON), default=dict, nullable=False
     )
 
-    run_candidates: Mapped[list[RunCandidate]] = relationship(back_populates="prompt_template")
+    run_candidates: Mapped[list[RunCandidate]] = relationship(
+        back_populates="prompt_template",
+        primaryjoin="PromptTemplate.id == RunCandidate.prompt_template_id",
+        foreign_keys="RunCandidate.prompt_template_id",
+    )
 
     def snapshot(self) -> JSONDict:
         return {
@@ -312,10 +476,13 @@ class PromptTemplate(UuidPrimaryKeyMixin, TimestampMixin, Base):
         }
 
 
-class ModelProfile(UuidPrimaryKeyMixin, TimestampMixin, Base):
+class ModelProfile(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "model_profiles"
     __table_args__ = (
-        UniqueConstraint("name", "version", name="uq_model_profiles_name_version"),
+        UniqueConstraint("workspace_id", "id", name="uq_model_profiles_workspace_id"),
+        UniqueConstraint(
+            "workspace_id", "name", "version", name="uq_model_profiles_workspace_name_version"
+        ),
         CheckConstraint("version >= 1", name="ck_model_profiles_version_positive"),
         CheckConstraint(
             "input_price_micro_usd_per_million_tokens IS NULL OR "
@@ -333,7 +500,12 @@ class ModelProfile(UuidPrimaryKeyMixin, TimestampMixin, Base):
             "OR pricing_source IS NOT NULL",
             name="ck_model_profiles_pricing_source_present",
         ),
-        Index("ix_model_profiles_provider_model", "provider", "model_name"),
+        Index(
+            "ix_model_profiles_workspace_provider_model",
+            "workspace_id",
+            "provider",
+            "model_name",
+        ),
     )
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -364,7 +536,11 @@ class ModelProfile(UuidPrimaryKeyMixin, TimestampMixin, Base):
         "metadata", MutableDict.as_mutable(JSON), default=dict, nullable=False
     )
 
-    run_candidates: Mapped[list[RunCandidate]] = relationship(back_populates="model_profile")
+    run_candidates: Mapped[list[RunCandidate]] = relationship(
+        back_populates="model_profile",
+        primaryjoin="ModelProfile.id == RunCandidate.model_profile_id",
+        foreign_keys="RunCandidate.model_profile_id",
+    )
 
     def snapshot(self) -> JSONDict:
         pricing_known = bool(self.metadata_json.get("synthetic")) or (
@@ -393,10 +569,19 @@ class ModelProfile(UuidPrimaryKeyMixin, TimestampMixin, Base):
         }
 
 
-class EvaluationRun(UuidPrimaryKeyMixin, TimestampMixin, Base):
+class EvaluationRun(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "evaluation_runs"
     __table_args__ = (
-        UniqueConstraint("idempotency_key", name="uq_evaluation_runs_idempotency_key"),
+        UniqueConstraint("workspace_id", "id", name="uq_evaluation_runs_workspace_id"),
+        UniqueConstraint(
+            "workspace_id", "idempotency_key", name="uq_evaluation_runs_workspace_idempotency"
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "dataset_id"],
+            ["datasets.workspace_id", "datasets.id"],
+            name="fk_evaluation_runs_workspace_dataset",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint("total_items >= 0", name="ck_evaluation_runs_total_nonnegative"),
         CheckConstraint("completed_items >= 0", name="ck_evaluation_runs_completed_nonnegative"),
         CheckConstraint("succeeded_items >= 0", name="ck_evaluation_runs_succeeded_nonnegative"),
@@ -408,9 +593,22 @@ class EvaluationRun(UuidPrimaryKeyMixin, TimestampMixin, Base):
             "succeeded_items + failed_items <= completed_items",
             name="ck_evaluation_runs_outcomes_within_completed",
         ),
-        Index("ix_evaluation_runs_status_created", "status", "created_at"),
-        Index("ix_evaluation_runs_dataset_id", "dataset_id"),
-        Index("ix_evaluation_runs_request_hash", "request_hash"),
+        CheckConstraint("lease_epoch >= 0", name="ck_evaluation_runs_lease_epoch_nonnegative"),
+        CheckConstraint(
+            "claim_attempts >= 0", name="ck_evaluation_runs_claim_attempts_nonnegative"
+        ),
+        Index(
+            "ix_evaluation_runs_workspace_status_created", "workspace_id", "status", "created_at"
+        ),
+        Index("ix_evaluation_runs_workspace_dataset", "workspace_id", "dataset_id"),
+        Index("ix_evaluation_runs_workspace_request_hash", "workspace_id", "request_hash"),
+        Index(
+            "ix_evaluation_runs_claimable",
+            "status",
+            "next_claim_at",
+            "lease_expires_at",
+            "queued_at",
+        ),
     )
 
     name: Mapped[str | None] = mapped_column(String(200))
@@ -428,6 +626,9 @@ class EvaluationRun(UuidPrimaryKeyMixin, TimestampMixin, Base):
     application_version: Mapped[str] = mapped_column(String(64), nullable=False)
     executor_type: Mapped[str] = mapped_column(String(64), default="in_process", nullable=False)
     requested_by: Mapped[str | None] = mapped_column(String(200))
+    requested_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL")
+    )
     idempotency_key: Mapped[str | None] = mapped_column(String(255))
     request_hash: Mapped[str | None] = mapped_column(String(64))
     acknowledge_real_cost: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -464,13 +665,42 @@ class EvaluationRun(UuidPrimaryKeyMixin, TimestampMixin, Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_owner: Mapped[str | None] = mapped_column(String(200))
+    lease_token: Mapped[str | None] = mapped_column(String(64))
+    lease_epoch: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_claim_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("'1970-01-01 00:00:00'"),
+        nullable=False,
+    )
 
-    dataset: Mapped[Dataset] = relationship(back_populates="runs")
+    dataset: Mapped[Dataset] = relationship(
+        back_populates="runs",
+        primaryjoin="Dataset.id == EvaluationRun.dataset_id",
+        foreign_keys=[dataset_id],
+    )
     candidates: Mapped[list[RunCandidate]] = relationship(
-        back_populates="run", cascade="all, delete-orphan", passive_deletes=True
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        primaryjoin="EvaluationRun.id == RunCandidate.run_id",
+        foreign_keys="RunCandidate.run_id",
     )
     results: Mapped[list[EvaluationResult]] = relationship(
-        back_populates="run", cascade="all, delete-orphan", passive_deletes=True
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        primaryjoin="EvaluationRun.id == EvaluationResult.run_id",
+        foreign_keys="EvaluationResult.run_id",
+    )
+    execution_attempts: Mapped[list[ExecutionAttempt]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        primaryjoin="EvaluationRun.id == ExecutionAttempt.run_id",
+        foreign_keys="ExecutionAttempt.run_id",
     )
 
     def transition_to(
@@ -499,13 +729,38 @@ class EvaluationRun(UuidPrimaryKeyMixin, TimestampMixin, Base):
             self.finished_at = changed_at
 
 
-class RunCandidate(UuidPrimaryKeyMixin, TimestampMixin, Base):
+class RunCandidate(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "run_candidates"
     __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_run_candidates_workspace_id"),
         UniqueConstraint(
-            "run_id", "prompt_template_id", "model_profile_id", name="uq_run_candidates_matrix"
+            "workspace_id",
+            "run_id",
+            "prompt_template_id",
+            "model_profile_id",
+            name="uq_run_candidates_workspace_matrix",
         ),
-        UniqueConstraint("run_id", "ordinal", name="uq_run_candidates_run_ordinal"),
+        UniqueConstraint(
+            "workspace_id", "run_id", "ordinal", name="uq_run_candidates_workspace_ordinal"
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "run_id"],
+            ["evaluation_runs.workspace_id", "evaluation_runs.id"],
+            name="fk_run_candidates_workspace_run",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "prompt_template_id"],
+            ["prompt_templates.workspace_id", "prompt_templates.id"],
+            name="fk_run_candidates_workspace_prompt",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "model_profile_id"],
+            ["model_profiles.workspace_id", "model_profiles.id"],
+            name="fk_run_candidates_workspace_model",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint("ordinal >= 0", name="ck_run_candidates_ordinal_nonnegative"),
         CheckConstraint("total_items >= 0", name="ck_run_candidates_total_nonnegative"),
         CheckConstraint("completed_items >= 0", name="ck_run_candidates_completed_nonnegative"),
@@ -513,7 +768,7 @@ class RunCandidate(UuidPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint(
             "completed_items <= total_items", name="ck_run_candidates_completed_within_total"
         ),
-        Index("ix_run_candidates_run_status", "run_id", "status"),
+        Index("ix_run_candidates_workspace_run_status", "workspace_id", "run_id", "status"),
     )
 
     run_id: Mapped[str] = mapped_column(
@@ -563,11 +818,27 @@ class RunCandidate(UuidPrimaryKeyMixin, TimestampMixin, Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    run: Mapped[EvaluationRun] = relationship(back_populates="candidates")
-    prompt_template: Mapped[PromptTemplate] = relationship(back_populates="run_candidates")
-    model_profile: Mapped[ModelProfile] = relationship(back_populates="run_candidates")
+    run: Mapped[EvaluationRun] = relationship(
+        back_populates="candidates",
+        primaryjoin="EvaluationRun.id == RunCandidate.run_id",
+        foreign_keys=[run_id],
+    )
+    prompt_template: Mapped[PromptTemplate] = relationship(
+        back_populates="run_candidates",
+        primaryjoin="PromptTemplate.id == RunCandidate.prompt_template_id",
+        foreign_keys=[prompt_template_id],
+    )
+    model_profile: Mapped[ModelProfile] = relationship(
+        back_populates="run_candidates",
+        primaryjoin="ModelProfile.id == RunCandidate.model_profile_id",
+        foreign_keys=[model_profile_id],
+    )
     results: Mapped[list[EvaluationResult]] = relationship(
-        back_populates="candidate", cascade="all, delete-orphan", passive_deletes=True
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        primaryjoin="RunCandidate.id == EvaluationResult.run_candidate_id",
+        foreign_keys="EvaluationResult.run_candidate_id",
     )
 
     def transition_to(
@@ -596,10 +867,34 @@ class RunCandidate(UuidPrimaryKeyMixin, TimestampMixin, Base):
             self.finished_at = changed_at
 
 
-class EvaluationResult(UuidPrimaryKeyMixin, TimestampMixin, Base):
+class EvaluationResult(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "evaluation_results"
     __table_args__ = (
-        UniqueConstraint("run_candidate_id", "test_case_id", name="uq_results_candidate_case"),
+        UniqueConstraint("workspace_id", "id", name="uq_results_workspace_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "run_candidate_id",
+            "test_case_id",
+            name="uq_results_workspace_candidate_case",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "run_id"],
+            ["evaluation_runs.workspace_id", "evaluation_runs.id"],
+            name="fk_results_workspace_run",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "run_candidate_id"],
+            ["run_candidates.workspace_id", "run_candidates.id"],
+            name="fk_results_workspace_candidate",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "test_case_id"],
+            ["test_cases.workspace_id", "test_cases.id"],
+            name="fk_results_workspace_case",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint("retry_count >= 0", name="ck_results_retry_count_nonnegative"),
         CheckConstraint(
             "latency_ms IS NULL OR latency_ms >= 0", name="ck_results_latency_nonnegative"
@@ -622,9 +917,9 @@ class EvaluationResult(UuidPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint(
             "effective_metric_weight >= 0", name="ck_results_effective_weight_nonnegative"
         ),
-        Index("ix_evaluation_results_run_status", "run_id", "status"),
-        Index("ix_evaluation_results_candidate_id", "run_candidate_id"),
-        Index("ix_evaluation_results_case_hash", "case_hash"),
+        Index("ix_results_workspace_run_status", "workspace_id", "run_id", "status"),
+        Index("ix_results_workspace_candidate", "workspace_id", "run_candidate_id"),
+        Index("ix_results_workspace_case_hash", "workspace_id", "case_hash"),
     )
 
     run_id: Mapped[str] = mapped_column(
@@ -716,9 +1011,21 @@ class EvaluationResult(UuidPrimaryKeyMixin, TimestampMixin, Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    run: Mapped[EvaluationRun] = relationship(back_populates="results")
-    candidate: Mapped[RunCandidate] = relationship(back_populates="results")
-    test_case: Mapped[TestCase] = relationship(back_populates="results")
+    run: Mapped[EvaluationRun] = relationship(
+        back_populates="results",
+        primaryjoin="EvaluationRun.id == EvaluationResult.run_id",
+        foreign_keys=[run_id],
+    )
+    candidate: Mapped[RunCandidate] = relationship(
+        back_populates="results",
+        primaryjoin="RunCandidate.id == EvaluationResult.run_candidate_id",
+        foreign_keys=[run_candidate_id],
+    )
+    test_case: Mapped[TestCase] = relationship(
+        back_populates="results",
+        primaryjoin="TestCase.id == EvaluationResult.test_case_id",
+        foreign_keys=[test_case_id],
+    )
 
     def transition_to(
         self,
@@ -743,9 +1050,51 @@ class EvaluationResult(UuidPrimaryKeyMixin, TimestampMixin, Base):
             self.finished_at = changed_at
 
 
+class ExecutionAttempt(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Base):
+    """One immutable-identity lease epoch with mutable liveness and outcome fields."""
+
+    __tablename__ = "execution_attempts"
+    __table_args__ = (
+        UniqueConstraint("run_id", "lease_epoch", name="uq_execution_attempts_run_epoch"),
+        UniqueConstraint("lease_token", name="uq_execution_attempts_lease_token"),
+        ForeignKeyConstraint(
+            ["workspace_id", "run_id"],
+            ["evaluation_runs.workspace_id", "evaluation_runs.id"],
+            name="fk_execution_attempts_workspace_run",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("lease_epoch > 0", name="ck_execution_attempts_epoch_positive"),
+        Index("ix_execution_attempts_run_started", "run_id", "started_at"),
+        Index("ix_execution_attempts_owner_active", "lease_owner", "finished_at"),
+    )
+
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    lease_owner: Mapped[str] = mapped_column(String(200), nullable=False)
+    lease_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    lease_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    outcome: Mapped[str | None] = mapped_column(String(40))
+    error_type: Mapped[str | None] = mapped_column(String(100))
+
+    run: Mapped[EvaluationRun] = relationship(
+        back_populates="execution_attempts",
+        primaryjoin="EvaluationRun.id == ExecutionAttempt.run_id",
+        foreign_keys=[run_id],
+    )
+
+
 _IMMUTABLE_PROVENANCE_FIELDS: Final[dict[type[Base], frozenset[str]]] = {
     EvaluationRun: frozenset(
         {
+            "workspace_id",
             "dataset_id",
             "dataset_snapshot",
             "dataset_hash",
@@ -761,6 +1110,7 @@ _IMMUTABLE_PROVENANCE_FIELDS: Final[dict[type[Base], frozenset[str]]] = {
     ),
     RunCandidate: frozenset(
         {
+            "workspace_id",
             "run_id",
             "prompt_template_id",
             "model_profile_id",
@@ -775,6 +1125,7 @@ _IMMUTABLE_PROVENANCE_FIELDS: Final[dict[type[Base], frozenset[str]]] = {
     ),
     EvaluationResult: frozenset(
         {
+            "workspace_id",
             "run_id",
             "run_candidate_id",
             "test_case_id",
@@ -839,5 +1190,12 @@ def _reject_provenance_update(_mapper: Any, _connection: Any, target: Base) -> N
         raise ImmutableProvenanceError(f"immutable provenance fields changed: {fields}")
 
 
+def _reject_audit_mutation(_mapper: Any, _connection: Any, _target: AuditEvent) -> None:
+    raise ImmutableProvenanceError("audit events are append-only")
+
+
 for _model in _IMMUTABLE_PROVENANCE_FIELDS:
     event.listen(_model, "before_update", _reject_provenance_update)
+
+event.listen(AuditEvent, "before_update", _reject_audit_mutation)
+event.listen(AuditEvent, "before_delete", _reject_audit_mutation)

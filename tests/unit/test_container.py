@@ -5,12 +5,14 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+import evalforge.container as container_module
 from evalforge.api.app import create_app
 from evalforge.config import Settings
 from evalforge.container import AppContainer, build_adapter_registry, build_container
 from evalforge.database import check_database_readiness
 from evalforge.evaluation.adapters import AdapterRegistry
 from evalforge.evaluation.metrics import MetricRegistry
+from evalforge.security.auth import LocalAuthenticator
 
 
 class AsyncCloseClient:
@@ -63,6 +65,7 @@ async def test_container_awaits_async_client_close() -> None:
         session_factory=None,  # type: ignore[arg-type]
         metrics=MetricRegistry(),
         adapters=adapter_registry,
+        authenticator=LocalAuthenticator(),
         evaluation_service=None,  # type: ignore[arg-type]
         executor=executor,  # type: ignore[arg-type]
     )
@@ -83,6 +86,7 @@ def test_owned_container_is_closed_when_executor_startup_fails() -> None:
         session_factory=None,  # type: ignore[arg-type]
         metrics=MetricRegistry(),
         adapters=AdapterRegistry(),
+        authenticator=LocalAuthenticator(),
         evaluation_service=None,  # type: ignore[arg-type]
         executor=executor,  # type: ignore[arg-type]
     )
@@ -111,6 +115,28 @@ async def test_in_memory_database_migrates_on_the_owned_engine() -> None:
     container = build_container(settings, migrate=True)
     try:
         assert check_database_readiness(container.engine) is True
+    finally:
+        await container.close()
+
+
+@pytest.mark.asyncio
+async def test_auto_migrate_false_skips_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        database_url="sqlite+pysqlite:///:memory:",
+        auto_migrate=False,
+    )
+    migration_called = False
+
+    def forbidden_migration(*_args: object, **_kwargs: object) -> None:
+        nonlocal migration_called
+        migration_called = True
+
+    monkeypatch.setattr(container_module, "apply_migrations", forbidden_migration)
+    container = build_container(settings)
+    try:
+        assert migration_called is False
     finally:
         await container.close()
 

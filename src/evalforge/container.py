@@ -19,9 +19,10 @@ from evalforge.evaluation.adapters import (
     OpenAICompatibleAdapter,
     validate_backend_base_url,
 )
-from evalforge.evaluation.executor import LocalRunExecutor
+from evalforge.evaluation.executor import ApiOnlyRunExecutor, LocalRunExecutor, RunExecutor
 from evalforge.evaluation.metrics import MetricRegistry
 from evalforge.evaluation.service import EvaluationService
+from evalforge.security.auth import AuthBackend, LocalAuthenticator, OidcJwtAuthenticator
 
 
 class _NoAuthAsyncOpenAI(AsyncOpenAI):
@@ -41,8 +42,9 @@ class AppContainer:
     session_factory: SessionFactory
     metrics: MetricRegistry
     adapters: AdapterRegistry
+    authenticator: AuthBackend
     evaluation_service: EvaluationService
-    executor: LocalRunExecutor
+    executor: RunExecutor
 
     async def close(self) -> None:
         await self.executor.close()
@@ -67,6 +69,12 @@ def apply_migrations(settings: Settings, *, connection: Connection | None = None
     else:
         configuration.attributes["connection"] = connection
     command.upgrade(configuration, "head")
+    if connection is not None and connection.dialect.name == "sqlite":
+        if connection.in_transaction():
+            connection.commit()
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        if connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() != 1:
+            raise RuntimeError("SQLite foreign-key enforcement could not be restored")
 
 
 def build_adapter_registry(settings: Settings) -> AdapterRegistry:
@@ -100,10 +108,29 @@ def build_adapter_registry(settings: Settings) -> AdapterRegistry:
             OpenAICompatibleAdapter(
                 client=client,
                 provider="openai-compatible",
-                max_retries=1,
             ),
         )
     return registry
+
+
+def build_authenticator(settings: Settings) -> AuthBackend:
+    if settings.auth_mode == "local":
+        return LocalAuthenticator()
+    if (
+        settings.oidc_issuer is None
+        or settings.oidc_audience is None
+        or settings.oidc_jwks_url is None
+    ):
+        raise ValueError("OIDC configuration is incomplete")
+    return OidcJwtAuthenticator(
+        issuer=settings.oidc_issuer,
+        audience=settings.oidc_audience,
+        jwks_url=str(settings.oidc_jwks_url),
+        algorithms=tuple(settings.oidc_algorithms),
+        clock_skew_seconds=settings.oidc_clock_skew_seconds,
+        jwks_cache_seconds=settings.oidc_jwks_cache_seconds,
+        jwks_timeout_seconds=settings.oidc_jwks_timeout_seconds,
+    )
 
 
 def build_container(settings: Settings, *, migrate: bool | None = None) -> AppContainer:
@@ -117,19 +144,29 @@ def build_container(settings: Settings, *, migrate: bool | None = None) -> AppCo
         session_factory = create_session_factory(engine)
         metrics = MetricRegistry()
         adapters = build_adapter_registry(settings)
+        authenticator = build_authenticator(settings)
         service = EvaluationService(
             settings=settings,
             session_factory=session_factory,
             adapters=adapters,
             metrics=metrics,
         )
-        executor = LocalRunExecutor(service)
+        executor: RunExecutor
+        if settings.executor_mode == "api_only":
+            executor = ApiOnlyRunExecutor()
+        else:
+            executor = LocalRunExecutor(
+                service,
+                poll_interval_seconds=settings.worker_poll_interval_seconds,
+                role=settings.executor_mode,
+            )
         return AppContainer(
             settings=settings,
             engine=engine,
             session_factory=session_factory,
             metrics=metrics,
             adapters=adapters,
+            authenticator=authenticator,
             evaluation_service=service,
             executor=executor,
         )
@@ -143,7 +180,8 @@ def container_summary(container: AppContainer) -> dict[str, Any]:
     return {
         "version": container.settings.application_version,
         "environment": container.settings.environment,
+        "auth_mode": container.settings.auth_mode,
         "database_backend": container.settings.database_backend,
-        "executor": "persistent_local_worker",
+        "executor": container.executor.role,
         "registered_adapters": ["deterministic", *container.adapters.names],
     }

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import time
 from collections.abc import Callable
@@ -27,20 +26,12 @@ class OpenAICompatibleAdapter:
         *,
         client: Any,
         provider: str = "openai-compatible",
-        max_retries: int = 0,
-        retry_backoff_seconds: float = 0.25,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if not provider.strip():
             raise ValueError("provider cannot be blank")
-        if max_retries < 0 or max_retries > 3:
-            raise ValueError("max_retries must be between 0 and 3")
-        if retry_backoff_seconds < 0:
-            raise ValueError("retry_backoff_seconds cannot be negative")
         self._client = client
         self.provider = provider
-        self.max_retries = max_retries
-        self.retry_backoff_seconds = retry_backoff_seconds
         self._clock = clock
 
     @classmethod
@@ -73,13 +64,6 @@ class OpenAICompatibleAdapter:
                 getattr(settings, "openai_timeout_seconds", 30.0),
             )
         )
-        max_retries = int(
-            getattr(
-                settings,
-                "provider_max_retries",
-                getattr(settings, "openai_max_retries", 0),
-            )
-        )
         client_kwargs: dict[str, Any] = {
             "api_key": secret_value,
             "timeout": timeout,
@@ -91,7 +75,6 @@ class OpenAICompatibleAdapter:
         return cls(
             client=AsyncOpenAI(**client_kwargs),
             provider=provider,
-            max_retries=max_retries,
         )
 
     async def generate(self, request: GenerationRequest) -> GenerationResponse:
@@ -101,35 +84,26 @@ class OpenAICompatibleAdapter:
                 code="unsupported_api_mode",
             )
         started = self._clock()
-        attempts = 0
-        while True:
-            attempts += 1
-            try:
-                if request.api_mode == ApiMode.RESPONSES:
-                    raw = await self._create_response(request)
-                    normalized = self._normalize_responses(raw, request)
-                else:
-                    raw = await self._create_chat_completion(request)
-                    normalized = self._normalize_chat(raw, request)
-                latency_ms = max(0, round((self._clock() - started) * 1000))
-                return GenerationResponse(
-                    **normalized,
-                    latency_ms=latency_ms,
-                    retry_count=attempts - 1,
-                )
-            except ProviderError:
-                raise
-            except Exception as exc:
-                error = _classify_provider_error(exc, attempts=attempts)
-                # A 429 is rejected before generation and can be retried safely. A 5xx may
-                # represent a processed/billable request, so it is reported as retryable to the
-                # operator but is never retried automatically inside an evidence item.
-                if error.code == "provider_rate_limited" and attempts <= self.max_retries:
-                    delay = self.retry_backoff_seconds * (2 ** (attempts - 1))
-                    if delay:
-                        await asyncio.sleep(delay)
-                    continue
-                raise error from None
+        try:
+            if request.api_mode == ApiMode.RESPONSES:
+                raw = await self._create_response(request)
+                normalized = self._normalize_responses(raw, request)
+            else:
+                raw = await self._create_chat_completion(request)
+                normalized = self._normalize_chat(raw, request)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            # Generation requests can be billable even when the response is an error. Without
+            # a provider-specific idempotency contract, every logical evaluation item gets one
+            # network attempt, including HTTP 429 responses.
+            raise _classify_provider_error(exc, attempts=1) from None
+        latency_ms = max(0, round((self._clock() - started) * 1000))
+        return GenerationResponse(
+            **normalized,
+            latency_ms=latency_ms,
+            retry_count=0,
+        )
 
     async def _create_response(self, request: GenerationRequest) -> Any:
         messages: list[dict[str, str]] = []

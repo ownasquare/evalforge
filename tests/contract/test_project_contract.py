@@ -2,6 +2,15 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
+STREAMLIT_LAUNCHER = "src/evalforge/streamlit_app.py"
+STREAMLIT_CONTAINER_WRAPPER = "scripts/start_dashboard.py"
+STREAMLIT_LAUNCH_SURFACES = (
+    "Makefile",
+    ".github/workflows/ci.yml",
+    "README.md",
+    "docs/operations.md",
+    "tests/e2e/test_dashboard_smoke.py",
+)
 
 
 def test_required_project_surfaces_exist() -> None:
@@ -23,6 +32,8 @@ def test_required_project_surfaces_exist() -> None:
         "src/evalforge/migrations/env.py",
         "src/evalforge/migrations/versions/0001_initial_schema.py",
         "src/evalforge/migrations/versions/0002_preflight_context_cost_ack.py",
+        STREAMLIT_LAUNCHER,
+        STREAMLIT_CONTAINER_WRAPPER,
     }
     assert not {path for path in required if not (ROOT / path).exists()}
 
@@ -50,3 +61,19 @@ def test_no_cypress_e2e_configuration_exists() -> None:
     files = {path.name.lower() for path in ROOT.rglob("*") if path.is_file()}
     assert "cypress.config.js" not in files
     assert "cypress.config.ts" not in files
+
+
+def test_streamlit_launch_surfaces_use_the_neutral_launcher() -> None:
+    legacy_launcher = "src/evalforge/dashboard/app.py"
+
+    for path in STREAMLIT_LAUNCH_SURFACES:
+        contents = (ROOT / path).read_text()
+        assert STREAMLIT_LAUNCHER in contents, path
+        assert legacy_launcher not in contents, path
+
+    dashboard_dockerfile = (ROOT / "Dockerfile.dashboard").read_text()
+    dashboard_wrapper = (ROOT / STREAMLIT_CONTAINER_WRAPPER).read_text()
+    assert STREAMLIT_CONTAINER_WRAPPER in dashboard_dockerfile
+    assert STREAMLIT_LAUNCHER in dashboard_wrapper
+    assert legacy_launcher not in dashboard_dockerfile
+    assert legacy_launcher not in dashboard_wrapper

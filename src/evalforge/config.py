@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
+from ipaddress import ip_address
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import AnyHttpUrl, Field, SecretStr, field_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
 Environment = Literal["development", "test", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+AuthMode = Literal["local", "oidc"]
+OidcAlgorithm = Literal["RS256", "ES256"]
+ExecutorMode = Literal["embedded_single", "api_only", "database_worker"]
+
+
+def _default_oidc_algorithms() -> list[OidcAlgorithm]:
+    return ["RS256", "ES256"]
 
 
 class Settings(BaseSettings):
@@ -52,7 +62,22 @@ class Settings(BaseSettings):
     log_level: LogLevel = "INFO"
     json_logs: bool = False
 
+    auth_mode: AuthMode = "local"
+    oidc_issuer: str | None = None
+    oidc_audience: str | None = Field(default=None, min_length=1, max_length=500)
+    oidc_jwks_url: AnyHttpUrl | None = None
+    public_base_url: AnyHttpUrl | None = None
+    oidc_algorithms: list[OidcAlgorithm] = Field(default_factory=_default_oidc_algorithms)
+    oidc_clock_skew_seconds: int = Field(default=30, ge=0, le=300)
+    oidc_jwks_cache_seconds: int = Field(default=3_600, ge=30, le=86_400)
+    oidc_jwks_timeout_seconds: float = Field(default=5.0, ge=0.5, le=30)
+    dashboard_oidc_provider: str = Field(default="evalforge", min_length=1, max_length=64)
+
     real_runs_enabled: bool = False
+    executor_mode: ExecutorMode = "embedded_single"
+    worker_poll_interval_seconds: float = Field(default=0.5, ge=0.1, le=30)
+    worker_lease_seconds: int = Field(default=120, ge=10, le=3_600)
+    worker_heartbeat_seconds: int = Field(default=20, ge=1, le=1_200)
     max_concurrent_generations: int = Field(default=4, ge=1, le=64)
     max_cases_per_dataset: int = Field(default=500, ge=1, le=500)
     max_variants_per_run: int = Field(default=12, ge=1, le=100)
@@ -121,6 +146,82 @@ class Settings(BaseSettings):
             raise ValueError("trusted_hosts must contain hostnames without schemes or paths")
         return normalized
 
+    @field_validator("oidc_algorithms")
+    @classmethod
+    def normalize_oidc_algorithms(cls, value: list[OidcAlgorithm]) -> list[OidcAlgorithm]:
+        normalized = list(dict.fromkeys(value))
+        if not normalized:
+            raise ValueError("oidc_algorithms must contain RS256 or ES256")
+        return normalized
+
+    @field_validator("dashboard_oidc_provider")
+    @classmethod
+    def validate_dashboard_oidc_provider(cls, value: str) -> str:
+        normalized = value.strip()
+        if re.fullmatch(r"[A-Za-z0-9-]+", normalized) is None:
+            raise ValueError("dashboard_oidc_provider contains unsupported characters")
+        return normalized
+
+    @field_validator("oidc_issuer")
+    @classmethod
+    def validate_oidc_issuer(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise ValueError("oidc_issuer must be an absolute HTTP(S) URL without credentials")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_identity_mode(self) -> Settings:
+        if self.worker_heartbeat_seconds * 2 >= self.worker_lease_seconds:
+            raise ValueError("worker heartbeat must be less than half the lease duration")
+        if self.executor_mode == "database_worker" and self.database_backend == "sqlite":
+            raise ValueError("database_worker executor mode requires PostgreSQL")
+        if self.auth_mode == "local":
+            if not _is_loopback_host(self.api_host) or not _is_loopback_host(self.dashboard_host):
+                raise ValueError("local auth mode requires loopback API and dashboard bindings")
+            if self.public_base_url is not None and not _is_loopback_host(
+                self.public_base_url.host or ""
+            ):
+                raise ValueError("local auth mode cannot use a non-loopback public URL")
+            return self
+
+        public_base_url = self.public_base_url
+        required = {
+            "oidc_issuer": self.oidc_issuer,
+            "oidc_audience": self.oidc_audience,
+            "oidc_jwks_url": self.oidc_jwks_url,
+            "public_base_url": public_base_url,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise ValueError(f"OIDC configuration is incomplete: {', '.join(sorted(missing))}")
+        assert public_base_url is not None
+        issuer_scheme = urlsplit(self.oidc_issuer or "").scheme
+        if (
+            issuer_scheme != "https"
+            or self.oidc_jwks_url is None
+            or self.oidc_jwks_url.scheme != "https"
+        ):
+            raise ValueError("OIDC issuer and JWKS URL must use HTTPS")
+        if self.environment != "test":
+            if public_base_url.scheme != "https" or self.api_url.scheme != "https":
+                raise ValueError("OIDC public base URL and API URL must use HTTPS")
+            public_host = (public_base_url.host or "").casefold()
+            if not _trusted_host_matches(public_host, self.trusted_hosts):
+                raise ValueError("trusted_hosts must allow the public base URL host")
+        if self.seed_demo:
+            raise ValueError("seed_demo must be disabled in OIDC auth mode")
+        return self
+
     @property
     def database_backend(self) -> str:
         return make_url(self.database_url).get_backend_name()
@@ -157,3 +258,22 @@ def get_settings() -> Settings:
     """Return one immutable-by-convention settings snapshot per process."""
 
     return Settings()
+
+
+def _is_loopback_host(value: str) -> bool:
+    candidate = value.strip().strip("[]").casefold()
+    if candidate == "localhost":
+        return True
+    try:
+        return ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
+def _trusted_host_matches(host: str, patterns: list[str]) -> bool:
+    for pattern in patterns:
+        if pattern == "*" or pattern == host:
+            return True
+        if pattern.startswith("*.") and host.endswith(pattern[1:]):
+            return True
+    return False

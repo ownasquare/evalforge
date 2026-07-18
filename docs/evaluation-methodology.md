@@ -2,7 +2,9 @@
 
 EvalForge's built-in evaluator is deterministic, versioned, and evidence-producing. It is designed
 for regression detection and transparent prompt/model comparison. Lexical metrics do not establish
-factual truth or replace human calibration.
+factual truth or replace human calibration. Provider-neutral evaluator declarations and offline
+calibration reports make future judge integrations explicit without turning the default test suite
+into a paid or networked workflow.
 
 ## Result contract
 
@@ -18,6 +20,22 @@ Every metric records:
 
 Not-applicable metrics have no numeric value. They are excluded from denominators rather than
 silently becoming zero.
+
+## Evaluator declarations
+
+Every pluggable evaluator declares before execution:
+
+- stable name and version;
+- offline or external execution;
+- calls per case;
+- no, bounded, or unknown cost behavior;
+- exact fields it transmits from input, output, reference, and context;
+- maximum cost per case when cost is declared bounded.
+
+Offline evaluators must declare zero calls, zero transmitted fields, and no cost. External
+evaluators must declare at least one call and at least one transmitted field. The runner verifies
+that returned metric name and version match the declaration. This is a contract foundation, not a
+claim that an external judge is registered or calibrated.
 
 ## Correctness
 
@@ -90,6 +108,26 @@ shown separately.
 Run preflight uses rendered UTF-8 bytes plus a configurable per-request framing margin as a bounded
 safety estimate. It intentionally does not claim tokenizer equivalence or billable-token accuracy.
 
+## Offline threshold calibration
+
+`evalforge.evaluation.calibration` compares one declared metric threshold with a human-labeled
+calibration set. Each unique item carries a finite score from `0` to `1` and a human pass/fail
+decision. Direction-aware prediction produces the confusion matrix, precision, recall, and F1.
+Canonical, order-independent JSON yields a calibration-set SHA-256 so a report can be tied to the
+exact labels used.
+
+Calibration reports deliberately record:
+
+```text
+evidence_kind = offline_statistical_evidence
+production_validated = false
+```
+
+They do not imply the labels are representative, the threshold generalizes, or a production judge
+is accurate. Sample selection, reviewer agreement, task coverage, and deployment shift still need
+human governance. Calibration is currently a library primitive: there is no label-ingestion API,
+dashboard workflow, or CLI, and no human-reviewed calibration run has been completed.
+
 ## Calibration guidance
 
 - Create cases from real failure modes, not only happy paths.
@@ -101,4 +139,18 @@ safety estimate. It intentionally does not claim tokenizer equivalence or billab
 
 Optional LLM-as-judge evaluation should be treated as a separate provider-backed metric with its
 judge model, API mode, rubric bytes/hash, structured schema, and calibration version persisted. It
-must not replace the offline core or execute during default CI.
+must declare transferred fields and cost behavior, pass the same external-transfer and spend gates,
+and never replace the offline core or execute during default CI. The live contract test skips before
+credentials or client creation when no judge is registered; this proves the guard boundary, not
+judge quality. The protocol and guarded live contract exist, but no external judge implementation is
+registered or calibrated.
+
+## Evidence portability
+
+The `evalforge.run-export.v1` package records the application version, metric versions, disclosure
+profile, and immutable run evidence. Canonical JSON is addressed by SHA-256. `content_redacted`
+is constructed from a strict safe-provenance allowlist: validated IDs, hashes, versions, statuses,
+timestamps, counts, numeric metric summaries, usage, and cost may remain; known content surfaces use
+fixed markers and every unknown field is omitted. `full_evidence` retains complete run content and
+requires an explicit disclosure choice. Export integrity and provenance make a run reviewable
+elsewhere, but do not turn heuristic output into ground truth.

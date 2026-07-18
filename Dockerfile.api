@@ -22,12 +22,12 @@ COPY --chown=evalforge:evalforge pyproject.toml uv.lock README.md LICENSE alembi
 COPY --chown=evalforge:evalforge examples ./examples
 COPY --chown=evalforge:evalforge scripts ./scripts
 COPY --chown=evalforge:evalforge src ./src
-RUN uv sync --frozen --no-dev --no-editable
+RUN uv sync --frozen --no-dev --no-editable --extra postgres
 
 USER evalforge
 EXPOSE 8000
 
 HEALTHCHECK --interval=20s --timeout=5s --start-period=15s --retries=3 \
-  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read()"]
+  CMD ["python", "-c", "import os, urllib.parse, urllib.request; public_url=os.getenv('EVALFORGE_PUBLIC_BASE_URL','http://127.0.0.1:8000'); host=urllib.parse.urlsplit(public_url).hostname or '127.0.0.1'; request=urllib.request.Request('http://127.0.0.1:8000/health/ready', headers={'Host': host}); urllib.request.urlopen(request, timeout=3).read()"]
 
 CMD ["python", "scripts/start_api.py"]

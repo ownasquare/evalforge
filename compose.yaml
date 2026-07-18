@@ -1,7 +1,19 @@
 name: evalforge
 
-x-api-environment: &api-environment
+x-identity-environment: &identity-environment
   EVALFORGE_ENVIRONMENT: production
+  # Compose uses routable container interfaces, so it deliberately requires OIDC.
+  # Zero-configuration local auth remains available only on native loopback bindings.
+  EVALFORGE_AUTH_MODE: oidc
+  EVALFORGE_OIDC_ISSUER: ${EVALFORGE_OIDC_ISSUER:?set an HTTPS OIDC issuer}
+  EVALFORGE_OIDC_AUDIENCE: ${EVALFORGE_OIDC_AUDIENCE:?set the API audience}
+  EVALFORGE_OIDC_JWKS_URL: ${EVALFORGE_OIDC_JWKS_URL:?set an HTTPS JWKS URL}
+  EVALFORGE_PUBLIC_BASE_URL: ${EVALFORGE_PUBLIC_BASE_URL:?set the HTTPS public API URL}
+  EVALFORGE_TRUSTED_HOSTS: ${EVALFORGE_TRUSTED_HOSTS:?set a JSON list including the public API host}
+  EVALFORGE_DASHBOARD_OIDC_PROVIDER: ${EVALFORGE_DASHBOARD_OIDC_PROVIDER:-evalforge}
+
+x-api-environment: &api-environment
+  <<: *identity-environment
   EVALFORGE_DATABASE_URL: sqlite:////data/evalforge.db
   EVALFORGE_API_HOST: 0.0.0.0
   EVALFORGE_API_PORT: "8000"
@@ -46,11 +58,16 @@ services:
     image: evalforge-dashboard:local
     restart: unless-stopped
     environment:
-      EVALFORGE_API_URL: http://api:8000
+      <<: *identity-environment
+      EVALFORGE_API_URL: ${EVALFORGE_PUBLIC_BASE_URL:?set the HTTPS public API URL}
       EVALFORGE_DASHBOARD_HOST: 0.0.0.0
       EVALFORGE_DASHBOARD_PORT: "8501"
+      EVALFORGE_STREAMLIT_AUTH_FILE: /run/secrets/evalforge_streamlit_auth.toml
       HOME: /tmp
       STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    secrets:
+      - source: streamlit_auth
+        target: evalforge_streamlit_auth.toml
     ports:
       - "127.0.0.1:${EVALFORGE_DASHBOARD_PORT:-8501}:8501"
     depends_on:
@@ -60,3 +77,7 @@ services:
 
 volumes:
   evalforge_data:
+
+secrets:
+  streamlit_auth:
+    file: ${EVALFORGE_STREAMLIT_AUTH_SOURCE_FILE:?set the host path to the Streamlit OIDC TOML file}

@@ -96,3 +96,205 @@ def test_pricing_distinguishes_unknown_from_known_zero() -> None:
             api_mode=ApiMode.CHAT_COMPLETIONS,
             input_price_micro_usd_per_million_tokens=0,
         )
+
+
+def test_local_auth_is_the_loopback_default(database_url: str) -> None:
+    settings = Settings(_env_file=None, environment="development", database_url=database_url)
+
+    assert settings.auth_mode == "local"
+    assert settings.api_host == "127.0.0.1"
+    assert settings.dashboard_host == "127.0.0.1"
+
+
+@pytest.mark.parametrize("field", ["api_host", "dashboard_host"])
+def test_local_auth_rejects_non_loopback_bindings(database_url: str, field: str) -> None:
+    with pytest.raises(ValidationError, match="local auth mode"):
+        Settings(
+            _env_file=None,
+            environment="development",
+            database_url=database_url,
+            **{field: "192.0.2.1"},
+        )
+
+
+def test_oidc_production_configuration_fails_closed_when_incomplete(database_url: str) -> None:
+    with pytest.raises(ValidationError, match="OIDC"):
+        Settings(
+            _env_file=None,
+            environment="production",
+            database_url=database_url,
+            auth_mode="oidc",
+        )
+
+
+def test_oidc_production_requires_https_origins(database_url: str) -> None:
+    with pytest.raises(ValidationError, match="HTTPS"):
+        Settings(
+            _env_file=None,
+            environment="production",
+            database_url=database_url,
+            auth_mode="oidc",
+            oidc_issuer="http://identity.example",
+            oidc_audience="evalforge-api",
+            oidc_jwks_url="http://identity.example/jwks.json",
+            public_base_url="http://evalforge.example",
+        )
+
+
+def test_complete_oidc_production_configuration_is_accepted(database_url: str) -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="production",
+        database_url=database_url,
+        auth_mode="oidc",
+        oidc_issuer="https://identity.example",
+        oidc_audience="evalforge-api",
+        oidc_jwks_url="https://identity.example/.well-known/jwks.json",
+        public_base_url="https://evalforge.example",
+        api_url="https://evalforge.example",
+        trusted_hosts=["evalforge.example"],
+        oidc_algorithms=["RS256", "ES256"],
+        oidc_clock_skew_seconds=30,
+        oidc_jwks_cache_seconds=300,
+        oidc_jwks_timeout_seconds=2.0,
+        dashboard_oidc_provider="evalforge",
+    )
+
+    assert settings.auth_mode == "oidc"
+    assert settings.oidc_issuer == "https://identity.example"
+    assert settings.oidc_algorithms == ["RS256", "ES256"]
+
+
+def test_non_test_oidc_rejects_plaintext_dashboard_api_transport(database_url: str) -> None:
+    with pytest.raises(ValidationError, match="API URL must use HTTPS"):
+        Settings(
+            _env_file=None,
+            environment="development",
+            database_url=database_url,
+            auth_mode="oidc",
+            oidc_issuer="https://identity.example",
+            oidc_audience="evalforge-api",
+            oidc_jwks_url="https://identity.example/.well-known/jwks.json",
+            public_base_url="https://evalforge.example",
+            api_url="http://api:8000",
+        )
+
+
+def test_test_oidc_may_use_plaintext_loopback_harness(database_url: str) -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        database_url=database_url,
+        auth_mode="oidc",
+        oidc_issuer="https://identity.test",
+        oidc_audience="evalforge-api",
+        oidc_jwks_url="https://identity.test/.well-known/jwks.json",
+        public_base_url="http://evalforge.test",
+        api_url="http://127.0.0.1:8000",
+    )
+
+    assert str(settings.api_url) == "http://127.0.0.1:8000/"
+
+
+@pytest.mark.parametrize(
+    ("issuer", "jwks_url"),
+    [
+        ("http://identity.test", "https://identity.test/jwks.json"),
+        ("https://identity.test", "http://identity.test/jwks.json"),
+    ],
+)
+def test_test_oidc_rejects_plaintext_identity_endpoints(
+    database_url: str,
+    issuer: str,
+    jwks_url: str,
+) -> None:
+    with pytest.raises(ValidationError, match="issuer and JWKS URL must use HTTPS"):
+        Settings(
+            _env_file=None,
+            environment="test",
+            database_url=database_url,
+            auth_mode="oidc",
+            oidc_issuer=issuer,
+            oidc_audience="evalforge-api",
+            oidc_jwks_url=jwks_url,
+            public_base_url="http://evalforge.test",
+            api_url="http://127.0.0.1:8000",
+        )
+
+
+def test_oidc_production_requires_the_public_host_to_be_trusted(database_url: str) -> None:
+    with pytest.raises(ValidationError, match="trusted_hosts"):
+        Settings(
+            _env_file=None,
+            environment="production",
+            database_url=database_url,
+            auth_mode="oidc",
+            oidc_issuer="https://identity.example",
+            oidc_audience="evalforge-api",
+            oidc_jwks_url="https://identity.example/.well-known/jwks.json",
+            public_base_url="https://evalforge.example",
+            api_url="https://evalforge.example",
+        )
+
+
+def test_streamlit_named_oidc_provider_rejects_underscores(database_url: str) -> None:
+    with pytest.raises(ValidationError, match="dashboard_oidc_provider"):
+        Settings(
+            _env_file=None,
+            environment="test",
+            database_url=database_url,
+            auth_mode="oidc",
+            oidc_issuer="https://identity.test",
+            oidc_audience="evalforge-api",
+            oidc_jwks_url="https://identity.test/jwks.json",
+            public_base_url="http://evalforge.test",
+            dashboard_oidc_provider="company_provider",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("oidc_clock_skew_seconds", 301),
+        ("oidc_jwks_cache_seconds", 29),
+        ("oidc_jwks_timeout_seconds", 0.1),
+    ],
+)
+def test_oidc_runtime_bounds_are_enforced(database_url: str, field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            environment="test",
+            database_url=database_url,
+            auth_mode="oidc",
+            oidc_issuer="https://identity.test",
+            oidc_audience="evalforge-api",
+            oidc_jwks_url="https://identity.test/jwks.json",
+            public_base_url="http://evalforge.test",
+            **{field: value},
+        )
+
+
+def test_oidc_algorithms_reject_symmetric_signatures(database_url: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            environment="test",
+            database_url=database_url,
+            auth_mode="oidc",
+            oidc_issuer="https://identity.test",
+            oidc_audience="evalforge-api",
+            oidc_jwks_url="https://identity.test/jwks.json",
+            public_base_url="http://evalforge.test",
+            oidc_algorithms=["HS256"],
+        )
+
+
+def test_database_worker_rejects_sqlite_topology(database_url: str) -> None:
+    with pytest.raises(ValidationError, match="requires PostgreSQL"):
+        Settings(
+            _env_file=None,
+            environment="test",
+            database_url=database_url,
+            executor_mode="database_worker",
+        )

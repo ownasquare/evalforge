@@ -49,6 +49,7 @@ from evalforge.schemas import (
     PromptTemplateUpdate,
 )
 from evalforge.schemas import TestCaseCreate as CaseCreateSchema
+from evalforge.security.permissions import WorkspaceContext
 
 ROOT = Path(__file__).parents[2]
 
@@ -70,15 +71,7 @@ def test_file_sqlite_enables_safety_pragmas(engine: Engine) -> None:
 @pytest.mark.integration
 def test_metadata_contains_exact_domain_tables(engine: Engine) -> None:
     table_names = set(inspect(engine).get_table_names())
-    assert table_names == {
-        "datasets",
-        "test_cases",
-        "prompt_templates",
-        "model_profiles",
-        "evaluation_runs",
-        "run_candidates",
-        "evaluation_results",
-    }
+    assert table_names == set(Base.metadata.tables)
 
 
 @pytest.mark.integration
@@ -179,14 +172,15 @@ def test_state_version_prevents_stale_run_updates(
     session: Session,
     session_factory: SessionFactory,
     sample_result: EvaluationResult,
+    workspace_context: WorkspaceContext,
 ) -> None:
     session.add(sample_result)
     session.commit()
     first_session = session_factory()
     stale_session = session_factory()
     try:
-        first = EvaluationRunRepository(first_session).get(sample_result.run_id)
-        stale = EvaluationRunRepository(stale_session).get(sample_result.run_id)
+        first = EvaluationRunRepository(first_session, workspace_context).get(sample_result.run_id)
+        stale = EvaluationRunRepository(stale_session, workspace_context).get(sample_result.run_id)
         first.transition_to(RunStatus.RUNNING)
         first_session.commit()
         stale.transition_to(RunStatus.CANCELLED)
@@ -199,12 +193,14 @@ def test_state_version_prevents_stale_run_updates(
 
 @pytest.mark.integration
 def test_recovery_preserves_queued_work_and_interrupts_only_active_work(
-    session: Session, sample_result: EvaluationResult
+    session: Session,
+    sample_result: EvaluationResult,
+    workspace_context: WorkspaceContext,
 ) -> None:
     sample_result.status = ResultStatus.QUEUED
     session.add(sample_result)
     session.commit()
-    repository = EvaluationRunRepository(session)
+    repository = EvaluationRunRepository(session, workspace_context)
 
     assert repository.recover_abandoned() == 0
     assert sample_result.run.status is RunStatus.QUEUED
@@ -224,7 +220,9 @@ def test_recovery_preserves_queued_work_and_interrupts_only_active_work(
 
 @pytest.mark.integration
 def test_recovery_interrupts_queued_results_inside_an_active_run(
-    session: Session, sample_result: EvaluationResult
+    session: Session,
+    sample_result: EvaluationResult,
+    workspace_context: WorkspaceContext,
 ) -> None:
     sample_result.status = ResultStatus.QUEUED
     session.add(sample_result)
@@ -233,7 +231,7 @@ def test_recovery_interrupts_queued_results_inside_an_active_run(
     sample_result.candidate.transition_to(RunStatus.RUNNING)
     session.flush()
 
-    changed = EvaluationRunRepository(session).recover_abandoned()
+    changed = EvaluationRunRepository(session, workspace_context).recover_abandoned()
 
     assert changed == 1
     assert sample_result.run.status is RunStatus.INTERRUPTED
@@ -243,7 +241,9 @@ def test_recovery_interrupts_queued_results_inside_an_active_run(
 
 @pytest.mark.integration
 def test_recovery_preserves_persisted_provider_evidence_and_known_cost(
-    session: Session, sample_result: EvaluationResult
+    session: Session,
+    sample_result: EvaluationResult,
+    workspace_context: WorkspaceContext,
 ) -> None:
     sample_result.status = ResultStatus.RUNNING
     sample_result.cost_source = "reported_usage"
@@ -255,7 +255,7 @@ def test_recovery_preserves_persisted_provider_evidence_and_known_cost(
     session.add(sample_result)
     session.commit()
 
-    changed = EvaluationRunRepository(session).recover_abandoned()
+    changed = EvaluationRunRepository(session, workspace_context).recover_abandoned()
 
     assert changed == 1
     assert sample_result.status is ResultStatus.INTERRUPTED
@@ -267,10 +267,11 @@ def test_recovery_preserves_persisted_provider_evidence_and_known_cost(
 
 
 @pytest.mark.integration
-def test_run_creation_is_idempotent_and_requires_real_cost_acknowledgement(
+def test_run_creation_is_idempotent_and_requires_real_provider_approvals(
     session: Session,
+    workspace_context: WorkspaceContext,
 ) -> None:
-    dataset = DatasetRepository(session).create(
+    dataset = DatasetRepository(session, workspace_context).create(
         DatasetCreate(
             name="Idempotency benchmark",
             cases=[
@@ -283,13 +284,13 @@ def test_run_creation_is_idempotent_and_requires_real_cost_acknowledgement(
             ],
         )
     )
-    prompt = PromptTemplateRepository(session).create(
+    prompt = PromptTemplateRepository(session, workspace_context).create(
         PromptTemplateCreate(
             name="Simple prompt",
             user_template="{input}",
         )
     )
-    offline_model = ModelProfileRepository(session).create(
+    offline_model = ModelProfileRepository(session, workspace_context).create(
         ModelProfileCreate(
             name="Offline model",
             provider="deterministic",
@@ -300,7 +301,7 @@ def test_run_creation_is_idempotent_and_requires_real_cost_acknowledgement(
             pricing_source="deterministic",
         )
     )
-    real_model = ModelProfileRepository(session).create(
+    real_model = ModelProfileRepository(session, workspace_context).create(
         ModelProfileCreate(
             name="Provider model",
             provider="openai",
@@ -308,7 +309,7 @@ def test_run_creation_is_idempotent_and_requires_real_cost_acknowledgement(
             api_mode="responses",
         )
     )
-    repository = EvaluationRunRepository(session)
+    repository = EvaluationRunRepository(session, workspace_context)
     request = EvaluationRunCreate(
         dataset_id=UUID(dataset.id),
         prompt_ids=[UUID(prompt.id)],
@@ -318,22 +319,22 @@ def test_run_creation_is_idempotent_and_requires_real_cost_acknowledgement(
 
     first = repository.create(request, application_version="test")
     with pytest.raises(ConflictError, match="referenced by an evaluation run"):
-        DatasetRepository(session).delete_case(dataset.cases[0].id)
+        DatasetRepository(session, workspace_context).delete_case(dataset.cases[0].id)
     with pytest.raises(ConflictError, match="create a new version"):
-        DatasetRepository(session).add_case(
+        DatasetRepository(session, workspace_context).add_case(
             dataset.id,
             CaseCreateSchema(external_id="case-2", position=1, input_text="New case"),
         )
     with pytest.raises(ConflictError, match="create a new version"):
-        PromptTemplateRepository(session).update(
+        PromptTemplateRepository(session, workspace_context).update(
             prompt.id, PromptTemplateUpdate(user_template="Changed {input}")
         )
     with pytest.raises(ConflictError, match="create a new version"):
-        ModelProfileRepository(session).update(
+        ModelProfileRepository(session, workspace_context).update(
             offline_model.id,
             ModelProfileUpdate(generation_parameters={"temperature": 0.5}),
         )
-    updated_model = ModelProfileRepository(session).update(
+    updated_model = ModelProfileRepository(session, workspace_context).update(
         offline_model.id, ModelProfileUpdate(enabled=False)
     )
     assert updated_model.enabled is False
@@ -352,6 +353,17 @@ def test_run_creation_is_idempotent_and_requires_real_cost_acknowledgement(
     )
     with pytest.raises(RepositoryValidationError, match="acknowledge_real_cost"):
         repository.create(real_request, application_version="test")
+    cost_acknowledged = real_request.model_copy(update={"acknowledge_real_cost": True})
+    with pytest.raises(RepositoryValidationError, match="acknowledge_external_data_transfer"):
+        repository.create(cost_acknowledged, application_version="test")
+    transfer_acknowledged = cost_acknowledged.model_copy(
+        update={"acknowledge_external_data_transfer": True}
+    )
+    with pytest.raises(RepositoryValidationError, match="spend_limit_micro_usd"):
+        repository.create(transfer_acknowledged, application_version="test")
+    spend_limited = transfer_acknowledged.model_copy(update={"spend_limit_micro_usd": 1_000_000})
+    with pytest.raises(RepositoryValidationError, match="acknowledge_unknown_cost"):
+        repository.create(spend_limited, application_version="test")
 
 
 @pytest.mark.integration

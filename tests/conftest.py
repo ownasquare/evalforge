@@ -20,7 +20,21 @@ from evalforge.models import (
     RunCandidate,
     RunStatus,
     TestCase,
+    User,
+    Workspace,
+    WorkspaceMembership,
     canonical_json_hash,
+)
+from evalforge.security.permissions import (
+    LOCAL_ISSUER,
+    LOCAL_MEMBERSHIP_ID,
+    LOCAL_SUBJECT,
+    LOCAL_USER_ID,
+    LOCAL_WORKSPACE_ID,
+    LOCAL_WORKSPACE_SLUG,
+    WorkspaceContext,
+    WorkspaceRole,
+    local_workspace_context,
 )
 
 
@@ -44,6 +58,30 @@ def settings(database_url: str) -> Settings:
 def engine(settings: Settings) -> Iterator[Engine]:
     database_engine = create_database_engine(settings)
     Base.metadata.create_all(database_engine)
+    identity_session = create_session_factory(database_engine)()
+    identity_session.add_all(
+        [
+            Workspace(
+                id=LOCAL_WORKSPACE_ID,
+                slug=LOCAL_WORKSPACE_SLUG,
+                name="Local workspace",
+            ),
+            User(
+                id=LOCAL_USER_ID,
+                issuer=LOCAL_ISSUER,
+                subject=LOCAL_SUBJECT,
+                display_name="Local owner",
+            ),
+            WorkspaceMembership(
+                id=LOCAL_MEMBERSHIP_ID,
+                workspace_id=LOCAL_WORKSPACE_ID,
+                user_id=LOCAL_USER_ID,
+                role=WorkspaceRole.OWNER,
+            ),
+        ]
+    )
+    identity_session.commit()
+    identity_session.close()
     try:
         yield database_engine
     finally:
@@ -66,7 +104,12 @@ def session(session_factory: SessionFactory) -> Iterator[Session]:
 
 
 @pytest.fixture
-def sample_result(session: Session) -> EvaluationResult:
+def workspace_context() -> WorkspaceContext:
+    return local_workspace_context()
+
+
+@pytest.fixture
+def sample_result(session: Session, workspace_context: WorkspaceContext) -> EvaluationResult:
     case_payload = {
         "external_id": "case-1",
         "position": 0,
@@ -85,6 +128,7 @@ def sample_result(session: Session) -> EvaluationResult:
         "cases": [{**case_payload, "case_hash": case_hash}],
     }
     dataset = Dataset(
+        workspace_id=workspace_context.workspace_id,
         name="Geography",
         description="Small factual benchmark",
         version=1,
@@ -92,6 +136,7 @@ def sample_result(session: Session) -> EvaluationResult:
         metadata_json={},
     )
     case = TestCase(
+        workspace_id=workspace_context.workspace_id,
         dataset=dataset,
         external_id="case-1",
         position=0,
@@ -112,6 +157,7 @@ def sample_result(session: Session) -> EvaluationResult:
         "variables": ["context", "input"],
     }
     prompt = PromptTemplate(
+        workspace_id=workspace_context.workspace_id,
         name="Direct answer",
         description=None,
         version=1,
@@ -133,6 +179,7 @@ def sample_result(session: Session) -> EvaluationResult:
         "pricing_source": "deterministic",
     }
     model = ModelProfile(
+        workspace_id=workspace_context.workspace_id,
         name="Offline balanced",
         description=None,
         version=1,
@@ -151,6 +198,7 @@ def sample_result(session: Session) -> EvaluationResult:
     session.flush()
 
     run = EvaluationRun(
+        workspace_id=workspace_context.workspace_id,
         dataset=dataset,
         dataset_snapshot=dataset_snapshot,
         dataset_hash=dataset.content_hash,
@@ -160,6 +208,8 @@ def sample_result(session: Session) -> EvaluationResult:
         },
         application_version="test",
         executor_type="in_process",
+        requested_by_user_id=workspace_context.user_id,
+        requested_by=workspace_context.display_name,
         acknowledge_real_cost=False,
         status=RunStatus.QUEUED,
         total_items=1,
@@ -167,6 +217,7 @@ def sample_result(session: Session) -> EvaluationResult:
     session.add(run)
     session.flush()
     candidate = RunCandidate(
+        workspace_id=workspace_context.workspace_id,
         run=run,
         prompt_template=prompt,
         model_profile=model,
@@ -187,6 +238,7 @@ def sample_result(session: Session) -> EvaluationResult:
     session.flush()
 
     return EvaluationResult(
+        workspace_id=workspace_context.workspace_id,
         run=run,
         candidate=candidate,
         test_case=case,

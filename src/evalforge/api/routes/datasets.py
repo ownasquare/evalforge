@@ -10,8 +10,15 @@ from typing import Annotated, Any
 from fastapi import APIRouter, File, Query, Response, UploadFile, status
 from pydantic import ValidationError as PydanticValidationError
 
-from evalforge.api.dependencies import ContainerDep, SessionDep
+from evalforge.api.dependencies import (
+    ContainerDep,
+    EditorWorkspaceDep,
+    SessionDep,
+    ViewerWorkspaceDep,
+)
+from evalforge.audit import AuditRecorder
 from evalforge.errors import EvalForgeError, LimitError
+from evalforge.observability import current_request_id
 from evalforge.repositories import DatasetRepository
 from evalforge.schemas import (
     DatasetCreate,
@@ -30,10 +37,11 @@ router = APIRouter(tags=["datasets"])
 @router.get("/datasets", response_model=Page[DatasetRead])
 def list_datasets(
     session: SessionDep,
+    workspace: ViewerWorkspaceDep,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
-    rows, total = DatasetRepository(session).list(page=page, limit=limit)
+    rows, total = DatasetRepository(session, workspace).list(page=page, limit=limit)
     return {
         "items": [DatasetRead.model_validate(row).model_dump(mode="json") for row in rows],
         "total": total,
@@ -44,39 +52,76 @@ def list_datasets(
 
 @router.post("/datasets", status_code=status.HTTP_201_CREATED, response_model=DatasetDetail)
 def create_dataset(
-    data: DatasetCreate, session: SessionDep, container: ContainerDep
+    data: DatasetCreate,
+    session: SessionDep,
+    container: ContainerDep,
+    workspace: EditorWorkspaceDep,
 ) -> dict[str, Any]:
     if len(data.cases) > container.settings.max_cases_per_dataset:
         raise LimitError("The dataset exceeds the configured case limit.")
-    dataset = DatasetRepository(session).create(data)
+    repository = DatasetRepository(session, workspace)
+    dataset = repository.create(data)
+    AuditRecorder(session).record(
+        workspace,
+        action="dataset.create",
+        resource_type="dataset",
+        resource_id=dataset.id,
+        outcome="success",
+        request_id=current_request_id(),
+    )
     session.commit()
-    dataset = DatasetRepository(session).get(dataset.id, with_cases=True)
+    dataset = repository.get(dataset.id, with_cases=True)
     return DatasetDetail.model_validate(dataset).model_dump(mode="json")
 
 
 @router.get("/datasets/{dataset_id}", response_model=DatasetDetail)
-def get_dataset(dataset_id: str, session: SessionDep) -> dict[str, Any]:
-    dataset = DatasetRepository(session).get(dataset_id, with_cases=True)
+def get_dataset(
+    dataset_id: str, session: SessionDep, workspace: ViewerWorkspaceDep
+) -> dict[str, Any]:
+    dataset = DatasetRepository(session, workspace).get(dataset_id, with_cases=True)
     return DatasetDetail.model_validate(dataset).model_dump(mode="json")
 
 
 @router.patch("/datasets/{dataset_id}", response_model=DatasetRead)
-def update_dataset(dataset_id: str, data: DatasetUpdate, session: SessionDep) -> dict[str, Any]:
-    dataset = DatasetRepository(session).update(dataset_id, data)
+def update_dataset(
+    dataset_id: str,
+    data: DatasetUpdate,
+    session: SessionDep,
+    workspace: EditorWorkspaceDep,
+) -> dict[str, Any]:
+    dataset = DatasetRepository(session, workspace).update(dataset_id, data)
+    AuditRecorder(session).record(
+        workspace,
+        action="dataset.update",
+        resource_type="dataset",
+        resource_id=dataset.id,
+        outcome="success",
+        request_id=current_request_id(),
+    )
     session.commit()
     return DatasetRead.model_validate(dataset).model_dump(mode="json")
 
 
 @router.delete("/datasets/{dataset_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_dataset(dataset_id: str, session: SessionDep) -> Response:
-    DatasetRepository(session).delete(dataset_id)
+def delete_dataset(dataset_id: str, session: SessionDep, workspace: EditorWorkspaceDep) -> Response:
+    DatasetRepository(session, workspace).delete(dataset_id)
+    AuditRecorder(session).record(
+        workspace,
+        action="dataset.delete",
+        resource_type="dataset",
+        resource_id=dataset_id,
+        outcome="success",
+        request_id=current_request_id(),
+    )
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/datasets/{dataset_id}/cases", response_model=Page[TestCaseRead])
-def list_cases(dataset_id: str, session: SessionDep) -> dict[str, Any]:
-    dataset = DatasetRepository(session).get(dataset_id, with_cases=True)
+def list_cases(
+    dataset_id: str, session: SessionDep, workspace: ViewerWorkspaceDep
+) -> dict[str, Any]:
+    dataset = DatasetRepository(session, workspace).get(dataset_id, with_cases=True)
     return {
         "items": [
             TestCaseRead.model_validate(case).model_dump(mode="json") for case in dataset.cases
@@ -93,26 +138,60 @@ def list_cases(dataset_id: str, session: SessionDep) -> dict[str, Any]:
     response_model=TestCaseRead,
 )
 def create_case(
-    dataset_id: str, data: TestCaseCreate, session: SessionDep, container: ContainerDep
+    dataset_id: str,
+    data: TestCaseCreate,
+    session: SessionDep,
+    container: ContainerDep,
+    workspace: EditorWorkspaceDep,
 ) -> dict[str, Any]:
-    dataset = DatasetRepository(session).get(dataset_id, with_cases=True)
+    repository = DatasetRepository(session, workspace)
+    dataset = repository.get(dataset_id, with_cases=True)
     if len(dataset.cases) >= container.settings.max_cases_per_dataset:
         raise LimitError("The dataset has reached the configured case limit.")
-    case = DatasetRepository(session).add_case(dataset_id, data)
+    case = repository.add_case(dataset_id, data)
+    AuditRecorder(session).record(
+        workspace,
+        action="case.create",
+        resource_type="test_case",
+        resource_id=case.id,
+        outcome="success",
+        request_id=current_request_id(),
+    )
     session.commit()
     return TestCaseRead.model_validate(case).model_dump(mode="json")
 
 
 @router.patch("/cases/{case_id}", response_model=TestCaseRead)
-def update_case(case_id: str, data: TestCaseUpdate, session: SessionDep) -> dict[str, Any]:
-    case = DatasetRepository(session).update_case(case_id, data)
+def update_case(
+    case_id: str,
+    data: TestCaseUpdate,
+    session: SessionDep,
+    workspace: EditorWorkspaceDep,
+) -> dict[str, Any]:
+    case = DatasetRepository(session, workspace).update_case(case_id, data)
+    AuditRecorder(session).record(
+        workspace,
+        action="case.update",
+        resource_type="test_case",
+        resource_id=case.id,
+        outcome="success",
+        request_id=current_request_id(),
+    )
     session.commit()
     return TestCaseRead.model_validate(case).model_dump(mode="json")
 
 
 @router.delete("/cases/{case_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_case(case_id: str, session: SessionDep) -> Response:
-    DatasetRepository(session).delete_case(case_id)
+def delete_case(case_id: str, session: SessionDep, workspace: EditorWorkspaceDep) -> Response:
+    DatasetRepository(session, workspace).delete_case(case_id)
+    AuditRecorder(session).record(
+        workspace,
+        action="case.delete",
+        resource_type="test_case",
+        resource_id=case_id,
+        outcome="success",
+        request_id=current_request_id(),
+    )
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -122,6 +201,7 @@ async def import_cases(
     dataset_id: str,
     session: SessionDep,
     container: ContainerDep,
+    workspace: EditorWorkspaceDep,
     file: Annotated[UploadFile, File()],
 ) -> dict[str, Any]:
     content = await file.read(10 * 1024 * 1024 + 1)
@@ -134,7 +214,7 @@ async def import_cases(
             "invalid_encoding", "Imports must use UTF-8 encoding.", status_code=422
         ) from exc
     rows = _decode_import(file.filename or "upload.json", text)
-    repository = DatasetRepository(session)
+    repository = DatasetRepository(session, workspace)
     dataset = repository.get(dataset_id, with_cases=True)
     if len(dataset.cases) + len(rows) > container.settings.max_cases_per_dataset:
         raise LimitError("Import would exceed the configured dataset case limit.")
@@ -160,6 +240,15 @@ async def import_cases(
             details=errors,
         )
     created = [repository.add_case(dataset_id, case) for case in parsed]
+    AuditRecorder(session).record(
+        workspace,
+        action="dataset.import",
+        resource_type="dataset",
+        resource_id=dataset_id,
+        outcome="success",
+        request_id=current_request_id(),
+        metadata={"imported_count": len(created)},
+    )
     session.commit()
     return {
         "imported": len(created),
@@ -171,9 +260,20 @@ async def import_cases(
 def export_dataset(
     dataset_id: str,
     session: SessionDep,
+    workspace: ViewerWorkspaceDep,
     format: str = Query(default="json", pattern="^(json|csv)$"),
 ) -> Response:
-    dataset = DatasetRepository(session).get(dataset_id, with_cases=True)
+    dataset = DatasetRepository(session, workspace).get(dataset_id, with_cases=True)
+    AuditRecorder(session).record(
+        workspace,
+        action="dataset.export",
+        resource_type="dataset",
+        resource_id=dataset_id,
+        outcome="success",
+        request_id=current_request_id(),
+        metadata={"format": format},
+    )
+    session.commit()
     if format == "json":
         payload = DatasetDetail.model_validate(dataset).model_dump(mode="json")
         return Response(

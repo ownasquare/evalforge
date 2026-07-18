@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from evalforge.dashboard import state
 from evalforge.dashboard.client import ApiError, JsonObject, collection_items
 from evalforge.dashboard.components import (
     first_value,
@@ -31,6 +32,12 @@ def render() -> None:
         "Manage datasets, expected answers, scoring criteria, and prompt versions.",
         eyebrow="Benchmark library",
     )
+    editable = state.can_edit()
+    if not editable:
+        st.info(
+            "Viewer access is read-only. You can inspect and export benchmark evidence.",
+            icon=":material/visibility:",
+        )
     api = client()
     datasets_payload, dataset_error = load_resource("datasets", api.datasets)
     prompts_payload, prompt_error = load_resource("prompt library", api.prompts)
@@ -46,15 +53,15 @@ def render() -> None:
         if dataset_error:
             render_api_error(dataset_error, title="Datasets could not be loaded")
         else:
-            _render_datasets(list_payload(datasets_payload))
+            _render_datasets(list_payload(datasets_payload), editable=editable)
     with prompt_tab:
         if prompt_error:
             render_api_error(prompt_error, title="Prompt templates could not be loaded")
         else:
-            _render_prompts(list_payload(prompts_payload))
+            _render_prompts(list_payload(prompts_payload), editable=editable)
 
 
-def _render_datasets(datasets: list[JsonObject]) -> None:
+def _render_datasets(datasets: list[JsonObject], *, editable: bool) -> None:
     api = client()
     st.subheader("Benchmark datasets")
     if datasets:
@@ -75,22 +82,25 @@ def _render_datasets(datasets: list[JsonObject]) -> None:
             icon=":material/dataset:",
         )
 
-    with st.expander("Create dataset", icon=":material/add_circle:"):
-        with st.form("create-dataset", clear_on_submit=True):
-            name = st.text_input("Dataset name", max_chars=120)
-            description = st.text_area("Description", max_chars=1000)
-            submitted = st.form_submit_button("Create dataset", type="primary")
-        if submitted:
-            if not name.strip():
-                st.warning("Dataset name is required.")
-            else:
-                try:
-                    api.create_dataset({"name": name.strip(), "description": description.strip()})
-                except ApiError as error:
-                    render_api_error(error, title="The dataset was not created")
+    if editable:
+        with st.expander("Create dataset", icon=":material/add_circle:"):
+            with st.form("create-dataset", clear_on_submit=True):
+                name = st.text_input("Dataset name", max_chars=120)
+                description = st.text_area("Description", max_chars=1000)
+                submitted = st.form_submit_button("Create dataset", type="primary")
+            if submitted:
+                if not name.strip():
+                    st.warning("Dataset name is required.")
                 else:
-                    st.success("Dataset created.")
-                    st.rerun()
+                    try:
+                        api.create_dataset(
+                            {"name": name.strip(), "description": description.strip()}
+                        )
+                    except ApiError as error:
+                        render_api_error(error, title="The dataset was not created")
+                    else:
+                        st.success("Dataset created.")
+                        st.rerun()
 
     if not datasets:
         return
@@ -109,8 +119,9 @@ def _render_datasets(datasets: list[JsonObject]) -> None:
     if not cases and isinstance(detail_object.get("test_cases"), list):
         cases = [item for item in detail_object["test_cases"] if isinstance(item, dict)]
     _render_case_table(cases)
-    _render_case_forms(dataset_id, cases)
-    _render_import_export(dataset_id)
+    if editable:
+        _render_case_forms(dataset_id, cases)
+    _render_import_export(dataset_id, editable=editable)
 
 
 def _render_case_table(cases: list[JsonObject]) -> None:
@@ -237,8 +248,11 @@ def _render_case_forms(dataset_id: str, cases: list[JsonObject]) -> None:
                     st.rerun()
 
 
-def _render_import_export(dataset_id: str) -> None:
+def _render_import_export(dataset_id: str, *, editable: bool) -> None:
     api = client()
+    if not editable:
+        _render_dataset_export(api, dataset_id)
+        return
     import_column, export_column = st.columns(2)
     with import_column:
         st.subheader("Import cases")
@@ -282,34 +296,38 @@ def _render_import_export(dataset_id: str) -> None:
                             st.text(f"Cases added: {count}")
                         st.rerun()
     with export_column:
-        st.subheader("Export cases")
-        export_format = st.selectbox(
-            "Export format",
-            options=["json", "csv"],
-            key=f"export-format-{dataset_id}",
-        )
-        export_key = f"export-data-{dataset_id}-{export_format}"
-        if st.button("Prepare export", key=f"prepare-export-{dataset_id}"):
-            try:
-                st.session_state[export_key] = api.export_dataset(
-                    dataset_id, export_format=export_format
-                )
-            except ApiError as error:
-                render_api_error(error, title="The export could not be prepared")
-        export_data = st.session_state.get(export_key)
-        if isinstance(export_data, bytes):
-            mime = "text/csv" if export_format == "csv" else "application/json"
-            st.download_button(
-                "Download export",
-                data=export_data,
-                file_name=f"evalforge-{dataset_id}.{export_format}",
-                mime=mime,
-                type="primary",
-                width="stretch",
+        _render_dataset_export(api, dataset_id)
+
+
+def _render_dataset_export(api: Any, dataset_id: str) -> None:
+    st.subheader("Export cases")
+    export_format = st.selectbox(
+        "Export format",
+        options=["json", "csv"],
+        key=f"export-format-{dataset_id}",
+    )
+    export_key = f"export-data-{dataset_id}-{export_format}"
+    if st.button("Prepare export", key=f"prepare-export-{dataset_id}"):
+        try:
+            st.session_state[export_key] = api.export_dataset(
+                dataset_id, export_format=export_format
             )
+        except ApiError as error:
+            render_api_error(error, title="The export could not be prepared")
+    export_data = st.session_state.get(export_key)
+    if isinstance(export_data, bytes):
+        mime = "text/csv" if export_format == "csv" else "application/json"
+        st.download_button(
+            "Download export",
+            data=export_data,
+            file_name=f"evalforge-{dataset_id}.{export_format}",
+            mime=mime,
+            type="primary",
+            width="stretch",
+        )
 
 
-def _render_prompts(prompts: list[JsonObject]) -> None:
+def _render_prompts(prompts: list[JsonObject], *, editable: bool) -> None:
     api = client()
     st.subheader("Prompt templates")
     st.info(
@@ -334,6 +352,10 @@ def _render_prompts(prompts: list[JsonObject]) -> None:
             "Create a strict prompt template before running an evaluation.",
             icon=":material/description:",
         )
+
+    if not editable:
+        _render_prompt_inspector(prompts)
+        return
 
     create_tab, edit_tab, inspect_tab = st.tabs(["Create", "Edit", "Inspect"])
     with create_tab:
@@ -422,36 +444,36 @@ def _render_prompts(prompts: list[JsonObject]) -> None:
                     st.rerun()
 
     with inspect_tab:
-        if not prompts:
-            st.info("Create a prompt to inspect its exact bytes.")
-        else:
-            prompt_by_id = {
-                resource_id(prompt): prompt for prompt in prompts if resource_id(prompt)
-            }
-            options = {
-                prompt_id: resource_label(prompt, fallback="Prompt")
-                for prompt_id, prompt in prompt_by_id.items()
-            }
-            prompt_id = st.selectbox(
-                "Prompt to inspect",
-                options=list(options),
-                format_func=lambda value: options.get(value, value),
-                key="prompt-inspect-selector",
-            )
-            prompt = prompt_by_id[prompt_id]
-            safe_text_panel(
-                "System template",
-                first_value(prompt, "system_template", "system_prompt", default=""),
-            )
-            safe_text_panel(
-                "User template", first_value(prompt, "user_template", "template", default="")
-            )
-            metadata = {
-                key: prompt[key]
-                for key in ("id", "version", "template_hash", "created_at", "updated_at")
-                if key in prompt
-            }
-            st.code(json.dumps(metadata, indent=2, default=str), language="json")
+        _render_prompt_inspector(prompts)
+
+
+def _render_prompt_inspector(prompts: list[JsonObject]) -> None:
+    if not prompts:
+        st.info("No prompt versions are available to inspect.")
+        return
+    prompt_by_id = {resource_id(prompt): prompt for prompt in prompts if resource_id(prompt)}
+    options = {
+        prompt_id: resource_label(prompt, fallback="Prompt")
+        for prompt_id, prompt in prompt_by_id.items()
+    }
+    prompt_id = st.selectbox(
+        "Prompt to inspect",
+        options=list(options),
+        format_func=lambda value: options.get(value, value),
+        key="prompt-inspect-selector",
+    )
+    prompt = prompt_by_id[prompt_id]
+    safe_text_panel(
+        "System template",
+        first_value(prompt, "system_template", "system_prompt", default=""),
+    )
+    safe_text_panel("User template", first_value(prompt, "user_template", "template", default=""))
+    metadata = {
+        key: prompt[key]
+        for key in ("id", "version", "template_hash", "created_at", "updated_at")
+        if key in prompt
+    }
+    st.code(json.dumps(metadata, indent=2, default=str), language="json")
 
 
 def _truncate(value: Any, length: int = 100) -> str:

@@ -1,0 +1,136 @@
+# EvalForge Phase 3 Pre-Compact Handoff
+
+Status: **IN PROGRESS — context-preservation snapshot, not a completion claim**
+
+## 1. Project Identity & Strategic Context
+
+**Freshness: High - recently verified in this session**
+
+EvalForge is the portfolio-grade LLM evaluation dashboard in `/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard`. It uses FastAPI, Streamlit, SQLAlchemy/Alembic, SQLite or PostgreSQL, and a custom evaluation engine. Phase 2 productized the interface into a familiar work application with progressive disclosure. Phase 3 is the requested continuation: add an identity/public-exposure foundation, close cold deep-link navigation defects, strengthen execution durability, and take PostgreSQL, CI, provider, and judge/export readiness as far as local authority permits.
+
+Success criteria for this phase are: existing zero-configuration local use remains usable; authenticated shared mode has explicit tenant isolation and role enforcement; all protected APIs and dashboard calls are scoped; direct dashboard routes load cleanly from a cold browser; execution leasing is safe enough for more than one worker; PostgreSQL paths have local automated proof; source and tests exist for optional provider/judge integration without silently spending money; desktop/mobile UI remains easy to use and avoids an AI-demo aesthetic.
+
+Hard boundaries: no remote repository exists, so hosted CI cannot be proven; no paid-provider call may be made without the user selecting credentials, model, and spend cap; no production/public-exposure claim is permitted without TLS ingress, deployment, and authenticated readback proof. Every terminal command must use `/Users/fortunevieyra/.codex/bin/codex-secret-safe-exec.py`. Edits must use `apply_patch`. Completion requires repo documentation, a final 12-section handoff in this repo and the Beladed handoff mirror, local commits, and a clean worktree.
+
+## 2. Current System State & Architecture Map
+
+**Freshness: High - recently verified in this session**
+
+Phase 2 is complete on clean `main`. Recent commits are `fe476f7 docs: archive EvalForge Phase 2 proof`, `67db1d6 feat: productize EvalForge evaluation workspace`, `5a116c1 docs-record-evalforge-completion-and-handoff`, and `3347260 feat-build-evalforge-llm-evaluation-dashboard`. There is no Git remote.
+
+Current API composition is in `src/evalforge/api/app.py`; dependency injection is in `src/evalforge/api/dependencies.py`; settings are in `src/evalforge/config.py`. Local and OIDC authenticators, principal/workspace resolution, Viewer/Editor/Admin/Owner dependencies, session/workspace discovery routes, bearer-aware CORS, and content-minimized audit support now exist. Dataset, prompt, model, run, analytics, metadata, and capabilities routes are scoped and role-protected. Public service methods require a workspace context, while internal execution uses an explicit system-only run repository. CLI seed/export paths are local-mode-only, and shared mode rejects demo seeding.
+
+Top-level persisted resources are `Dataset`, `PromptTemplate`, `ModelProfile`, and `EvaluationRun`; child records include `TestCase`, `RunCandidate`, and `EvaluationResult`. Migration `0003` adds deterministic local workspace/user/owner rows, non-null workspace scope across all seven domain tables, a requesting user on runs, tenant-local uniqueness/idempotency, workspace-preserving composite foreign keys, and audit events. Migration `0004` adds durable lease fields and immutable execution-attempt evidence. Scoped repositories require a `WorkspaceContext`; a system-only run repository is explicit. The populated SQLite migration disables foreign-key enforcement only on its private migration connection, validates `foreign_key_check`, and restores enforcement through the application migration boundary. The same migration chain and focused lifecycle contracts have passed against disposable PostgreSQL 17.
+
+The cold-route root cause was the legacy router activation caused by launching `src/evalforge/dashboard/app.py` adjacent to a literal `dashboard/pages/` directory. A new entry point at `src/evalforge/streamlit_app.py` and updated launch references fix cold direct navigation. Focused route tests and cold/warm/mobile Playwright proof are green. The dashboard now supports Streamlit OIDC sign-in/out, access-token forwarding, non-secret token fingerprints, explicit workspace selection, account context, workspace-scoped cache separation, and state purging on identity/workspace/401 boundaries. The remaining dashboard integration is role-aware mutation visibility and final rendered proof.
+
+`EvaluationService` performs preflight, run creation, cancellation, execution, and metric evaluation. Database-backed atomic claims, heartbeat renewal, lease epochs/tokens, stale-owner fencing, safe pre-provider replay, output-resume scoring, cross-process cancellation, bounded shutdown, and billing-ambiguous no-replay behavior are implemented. The focused durable suite is green across two independent SQLite engines/managers. Calibration statistics, a judge evaluator protocol, and a consent-gated versioned export package are implemented with focused tests; request-level provider transfer consent and user-selected spend ceiling integration remain. All three architecture audits are complete.
+
+## 3. Critical Decisions & Reasoning History
+
+**Freshness: High - recently verified in this session**
+
+Phase 3 should preserve a frictionless local portfolio experience while adding an explicitly enabled shared/authenticated mode. The likely direction is server-validated bearer credentials mapped to tenant and role, with secrets supplied only through environment or Streamlit secret storage and never through URLs or browser-local persistence. Health liveness may remain public; resource APIs should be protected when authentication mode is enabled.
+
+Tenant scope should live on top-level resources and be enforced in repositories and service entry points, not merely filtered in the UI. Existing databases should backfill a stable default tenant so Phase 2 data remains usable. Idempotency and name/version uniqueness should become tenant-local. Child access should inherit scope through scoped parent ownership and joins.
+
+Dashboard cache identity must include the principal/tenant context so one signed-in identity cannot receive another identity's cached data. The evaluation executor may use system-level internal lookup for globally unique run IDs, but public access must never bypass tenant scope.
+
+The cold-route fix must address the true Streamlit bootstrap/navigation cause rather than hide the overlay with CSS. Durable queue work must use database-backed, atomic lease semantics and explicit retry/recovery behavior if it is implemented. External GitHub, hosted CI, paid-provider, and production claims remain separate proof layers.
+
+## 4. Recent Work & Iteration Log (High Priority)
+
+**Freshness: High - recently verified in this session**
+
+The Phase 2 final handoff at `docs/handoffs/2026-07-17-codex-evalforge-phase-2.handoff.mdc` was read fully before Phase 3 discovery. It identifies identity/network exposure controls as P2 and cold route, durable queue, PostgreSQL/GitHub Actions, and paid judge calibration as the next P3/P4 work.
+
+This session read the home rules, self-learning model, relevant implementation skills, current Phase 2 handoff, application factory, dependencies, settings, dashboard shell/client/state, route modules, models, repositories, services, and migrations. It confirmed no existing authentication or tenant boundary and identified the dashboard cache scoping issue and global uniqueness/idempotency behavior.
+
+Three bounded audits completed: `identity_arch_audit` defined local/OIDC role and workspace boundaries; `deep_link_audit` found and fixed the launcher/legacy-router collision; `scale_external_audit` identified startup recovery as unsafe for multiple API instances and added a full populated-`0002` migration regression test. Its initially red SQLite foreign-key failure is now fixed and the focused migration proof is green.
+
+Root wrote and reviewed `docs/superpowers/plans/2026-07-18-evalforge-phase-3-hardening.md`, implemented the identity models and configuration foundation, migrations `0003` and `0004`, tenant-scoped repositories, deterministic local compatibility rows, full API role/workspace enforcement, audit recording, database-backed worker leases, and worker/API-only runtime roles. The dashboard identity lane, PostgreSQL 17 parity lane, authorization lane, and durable-execution lane are locally green. The current integration checkpoint is closing viewer-only UI affordances and provider consent/spend controls before the complete matrix and rendered proof. This refreshed snapshot records the latest post-compaction integration checkpoint required by `/Users/fortunevieyra/.codex/rules/pre-compact-handoff.md`.
+
+## 5. Testing, Validation & Quality Framework
+
+**Freshness: High - recently verified in this session**
+
+The pre-change Phase 3 baseline was `146 passed, 1 deselected in 4.79s`. Current focused proof includes: cold/warm/mobile route E2E `9 passed, 1 deselected`; launcher/route unit coverage `15 passed`; security foundation `51 passed` plus Ruff/Mypy/Bandit; calibration/export `26 passed` plus Ruff/Mypy; dashboard identity `63 passed`; API workflow and authorization `7 passed`; durable execution and lifecycle `14 passed`; and disposable PostgreSQL 17 migration/lifecycle parity `10 passed` plus Alembic no-drift, seed, doctor, and Ruff checks. The full post-integration matrix has not yet run and no full-green claim is made.
+
+Rendered UI proof must use the in-app Browser first, followed by repository Playwright E2E. Proof must include desktop and mobile, navigation from a cold direct URL, nonblank content, absence of bootstrap overlays, interactions, and console warning/error review. Cypress is component-only and must not be introduced for E2E.
+
+Local PostgreSQL proof may use an owned temporary/containerized database if available. Hosted GitHub Actions proof is impossible until a remote is selected and published. Paid-provider behavior may be validated with mocks/fakes locally, but live score calibration remains unproved until the user authorizes credentials, model, and spend.
+
+## 6. Debugging History & Failure Modes
+
+**Freshness: High - recently verified in this session**
+
+The cold direct-deep-link failure was reproduced and traced to Streamlit treating the adjacent literal `dashboard/pages/` directory as a legacy multipage app before `st.navigation` initialized. Launching the new top-level entry point fixes it without CSS masking. Playwright retains a narrow allowance for Streamlit's known non-root relative probes to `_stcore/health` and `_stcore/host-config`; all application routes and visible content must remain clean.
+
+Identity-related latent failure modes include route-only checks that leave repository/service bypasses, global idempotency leaking run existence across tenants, global name/version constraints blocking valid tenant-local assets, unscoped cached HTTP responses, mutation-by-ID without owner checks, and public capability output that exposes secrets.
+
+Queue-related failure modes included two workers claiming the same run, a crashed worker leaving a run permanently active, stale workers overwriting a recovered run, and SQLite/PostgreSQL transaction differences. The migration test exposed a concrete populated-SQLite failure: Alembic batch recreation attempted to drop a referenced parent while foreign keys remained active. The repair confines `PRAGMA foreign_keys=OFF` to a private migration connection, commits the raw DBAPI boundary, validates `foreign_key_check`, and restores enforcement through `apply_migrations`. PostgreSQL exposed an unnecessary forced batch-recreation path, now limited correctly by dialect. The lease tests also exposed SQLite whole-second database-clock precision and executor shutdown hangs; millisecond database time and bounded wake/cancel shutdown resolved both.
+
+One discovery command previously included shell metacharacters through the safety wrapper without base64 argv. It leaked no secrets and made no changes, but all future complex shell arguments must use the wrapper's URL-safe base64 JSON argv mode.
+
+## 7. Established Processes & Effective Patterns
+
+**Freshness: High - recently verified in this session**
+
+Execution order: read governing artifacts; verify current Git/process truth; run independent read-only audits; write a detailed implementation plan under `docs/superpowers/plans/`; track it with the plan tool; implement by bounded file lanes with tests first; integrate and run focused tests; run the complete local quality matrix; launch only owned services on fresh ports; perform Browser proof before Playwright; write completion docs and final handoffs; commit intentionally; verify clean status.
+
+All commands use `/Users/fortunevieyra/.codex/bin/codex-secret-safe-exec.py -- <argv>`. Complex arguments use `--argv-b64`. Search uses `rg` or `rg --files`. Existing user changes and unrelated services are preserved. Visual design follows the current EvalForge work-app language and progressive disclosure rather than introducing decorative AI imagery or one-off components.
+
+## 8. Risks, Technical Debt & Strict Preservation Rules
+
+**Freshness: High - recently verified in this session**
+
+Do not alter unrelated projects or stop ports used by other applications. Preserve previously observed services on `8000/8501` and `8012/8512`, the unrelated Compose project, and the deep-link audit's owned `8037/8537` until that agent cleans them up. Root should use fresh owned ports such as `8047/8547` later.
+
+Do not create a remote, push, deploy, purchase/provider-call, store secrets in the repo, or claim hosted/production readiness without explicit authority and evidence. Do not weaken zero-config local mode accidentally. Do not implement UI-only tenant filtering. Do not let authentication tokens enter URLs, logs, screenshots, docs, browser storage, or cache keys in plaintext.
+
+The repository currently has no remote, so GitHub Actions can only be authored/lint-checked locally despite complete PostgreSQL 17 matrix source. TLS, rate limiting, live provider calibration, and production authenticated readback remain external acceptance layers even if supporting source is completed. Public resource/service paths, analytics queries, CLI paths, and dashboard caches now have focused local authorization proof; final UI role visibility and the full regression matrix still gate the identity milestone.
+
+## 9. Key Artifacts & References
+
+**Freshness: High - recently verified in this session**
+
+- Governing home rule: `/Users/fortunevieyra/AGENTS.md`
+- Operating model: `/Users/fortunevieyra/.codex/CODEX_SELF_LEARNING_SYSTEM.md`
+- Pre-compact rule: `/Users/fortunevieyra/.codex/rules/pre-compact-handoff.md`
+- Phase 2 handoff: `/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard/docs/handoffs/2026-07-17-codex-evalforge-phase-2.handoff.mdc`
+- API composition: `src/evalforge/api/app.py`, `src/evalforge/api/dependencies.py`
+- Settings: `src/evalforge/config.py`
+- Dashboard: `src/evalforge/dashboard/app.py`, `src/evalforge/dashboard/client.py`, `src/evalforge/dashboard/state.py`
+- Persistence: `src/evalforge/db/models/`, `src/evalforge/db/repositories/`, `migrations/versions/`
+- Services: `src/evalforge/services/evaluation.py`
+- Phase 3 plan: `docs/superpowers/plans/2026-07-18-evalforge-phase-3-hardening.md`
+- Identity/security: `src/evalforge/security/`, `src/evalforge/api/dependencies.py`, `src/evalforge/api/routes/session.py`
+- Tenant migration and scope: `src/evalforge/migrations/versions/0003_identity_tenant_scope.py`, `src/evalforge/models.py`, `src/evalforge/repositories.py`
+- Calibration/export: `src/evalforge/evaluation/calibration.py`, `src/evalforge/evaluation/evaluators/`, `src/evalforge/exports/`
+- Cold launcher: `src/evalforge/streamlit_app.py`
+- Safety wrapper: `/Users/fortunevieyra/.codex/bin/codex-secret-safe-exec.py`
+
+## 10. Next Steps & Prioritized Backlog
+
+**Freshness: High - recently verified in this session**
+
+1. Finish role-aware dashboard visibility: retain read access for Viewers while hiding create, import, edit, and cancellation affordances; include Admin in workspace parsing and align provider-name validation.
+2. Integrate explicit external-transfer consent and a user-selected spend ceiling into real-provider preflight and dashboard flows; keep live/provider contract tests skipped unless separately authorized.
+3. Re-run migration, database, container, API, dashboard, durable, calibration/export, and complete regression/static/security suites after integration.
+4. Perform in-app Browser proof before repository Playwright, including desktop/mobile and light/dark behavior on fresh owned ports.
+5. Update operations, security, product, and Phase 3 completion docs; produce final 12-section handoffs, commit coherently, and prove a clean worktree.
+6. Report external gates precisely: remote/hosted CI destination; TLS/public deployment; paid provider credentials, selected model, and spend cap.
+
+## 11. Continuation & Working Style Instructions
+
+**Freshness: High - recently verified in this session**
+
+Continue from this exact snapshot and the Phase 2 final handoff; do not restart broad discovery. Favor evidence over assumptions, keep local/hosted/production/provider/browser proof layers separate, and surface exact blockers. Use concise commentary updates at meaningful milestones. Make reasonable local implementation decisions without pausing, but stop before an action that creates a remote, incurs cost, exposes a service publicly, or requires user credentials.
+
+Use bounded multi-agent lanes only where file ownership is clear, because all agents share the worktree. Integrate after reading each report. Maintain product-like UI copy and progressive disclosure. Validate the user journey rather than merely checking individual components.
+
+## 12. Confidence & Freshness Assessment
+
+**Freshness: High - recently verified in this session**
+
+Sections 1–11 are high-confidence for the current source and process state because the Phase 2 handoff, implementation plan, audits, changed source, and focused proof were reviewed in this execution chain. Cold navigation, API authorization, tenant persistence, dashboard identity, durable execution, calibration/export foundations, and PostgreSQL 17 parity now have focused local proof. Viewer-only UI behavior, provider consent/spend integration, the complete regression matrix, and final rendered proof remain unproved. Phase 3 remains incomplete until the full matrix, rendered UI proof, documentation, commits, and clean status are complete. Hosted CI, public deployment, and paid-provider calibration are confirmed unproved external layers.

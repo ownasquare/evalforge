@@ -206,7 +206,10 @@ async def test_chat_completions_mode_maps_response_and_never_calls_responses() -
 
 
 @pytest.mark.asyncio
-async def test_retryable_status_is_bounded_and_reported() -> None:
+@pytest.mark.parametrize("api_mode", [ApiMode.RESPONSES, ApiMode.CHAT_COMPLETIONS])
+async def test_rate_limit_is_never_retried_without_provider_idempotency(
+    api_mode: ApiMode,
+) -> None:
     response = SimpleNamespace(
         id="resp_retry",
         output_text="Recovered",
@@ -214,18 +217,20 @@ async def test_retryable_status_is_bounded_and_reported() -> None:
         usage=None,
     )
     client = FakeClient(responses_result=response)
-    client.responses = FlakyEndpoint(response)
-    adapter = OpenAICompatibleAdapter(
-        client=client,
-        max_retries=1,
-        retry_backoff_seconds=0,
-    )
+    endpoint = FlakyEndpoint(response)
+    if api_mode is ApiMode.RESPONSES:
+        client.responses = endpoint
+    else:
+        client.chat.completions = endpoint
+    adapter = OpenAICompatibleAdapter(client=client)
 
-    result = await adapter.generate(make_request(api_mode=ApiMode.RESPONSES, model="gpt-test"))
+    with pytest.raises(ProviderError) as raised:
+        await adapter.generate(make_request(api_mode=api_mode, model="gpt-test"))
 
-    assert result.text == "Recovered"
-    assert result.retry_count == 1
-    assert len(client.responses.calls) == 2
+    assert raised.value.code == "provider_rate_limited"
+    assert raised.value.retryable is True
+    assert raised.value.attempts == 1
+    assert len(endpoint.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -233,7 +238,7 @@ async def test_ambiguous_upstream_failure_is_never_retried_automatically() -> No
     client = FakeClient()
     endpoint = CountingErrorEndpoint(503)
     client.responses = endpoint
-    adapter = OpenAICompatibleAdapter(client=client, max_retries=3, retry_backoff_seconds=0)
+    adapter = OpenAICompatibleAdapter(client=client)
 
     with pytest.raises(ProviderError) as raised:
         await adapter.generate(make_request(api_mode=ApiMode.RESPONSES, model="gpt-test"))
@@ -247,7 +252,7 @@ async def test_ambiguous_upstream_failure_is_never_retried_automatically() -> No
 @pytest.mark.asyncio
 async def test_authentication_error_is_sanitized_and_not_retried() -> None:
     client = FakeClient(responses_error=StatusError(401))
-    adapter = OpenAICompatibleAdapter(client=client, max_retries=3)
+    adapter = OpenAICompatibleAdapter(client=client)
 
     with pytest.raises(ProviderError) as raised:
         await adapter.generate(make_request(api_mode=ApiMode.RESPONSES, model="gpt-test"))
@@ -264,7 +269,7 @@ async def test_api_mode_failure_never_silently_falls_back() -> None:
         responses_error=RuntimeError("responses unsupported secret-value"),
         chat_result=SimpleNamespace(),
     )
-    adapter = OpenAICompatibleAdapter(client=client, provider="openai", max_retries=0)
+    adapter = OpenAICompatibleAdapter(client=client, provider="openai")
 
     with pytest.raises(ProviderError) as raised:
         await adapter.generate(make_request(api_mode=ApiMode.RESPONSES, model="gpt-test"))

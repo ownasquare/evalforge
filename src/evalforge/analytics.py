@@ -24,23 +24,43 @@ def _percentile(values: list[float], percentile: float) -> float | None:
     return round(ordered[lower] + ((ordered[upper] - ordered[lower]) * fraction), 3)
 
 
-def build_overview(session: Session) -> dict[str, Any]:
+def build_overview(session: Session, workspace_id: str) -> dict[str, Any]:
     """Build bounded aggregate data for the dashboard landing page."""
-    total_runs = session.scalar(select(func.count()).select_from(EvaluationRun)) or 0
+    total_runs = (
+        session.scalar(
+            select(func.count())
+            .select_from(EvaluationRun)
+            .where(EvaluationRun.workspace_id == workspace_id)
+        )
+        or 0
+    )
     completed_runs = (
         session.scalar(
             select(func.count())
             .select_from(EvaluationRun)
-            .where(EvaluationRun.status.in_([RunStatus.COMPLETED, RunStatus.COMPLETED_WITH_ERRORS]))
+            .where(
+                EvaluationRun.workspace_id == workspace_id,
+                EvaluationRun.status.in_([RunStatus.COMPLETED, RunStatus.COMPLETED_WITH_ERRORS]),
+            )
         )
         or 0
     )
-    total_results = session.scalar(select(func.count()).select_from(EvaluationResult)) or 0
+    total_results = (
+        session.scalar(
+            select(func.count())
+            .select_from(EvaluationResult)
+            .where(EvaluationResult.workspace_id == workspace_id)
+        )
+        or 0
+    )
     evaluated_results = (
         session.scalar(
             select(func.count())
             .select_from(EvaluationResult)
-            .where(EvaluationResult.status.in_([ResultStatus.COMPLETED, ResultStatus.ERROR]))
+            .where(
+                EvaluationResult.workspace_id == workspace_id,
+                EvaluationResult.status.in_([ResultStatus.COMPLETED, ResultStatus.ERROR]),
+            )
         )
         or 0
     )
@@ -48,25 +68,33 @@ def build_overview(session: Session) -> dict[str, Any]:
         session.scalar(
             select(func.count())
             .select_from(EvaluationResult)
-            .where(EvaluationResult.status == ResultStatus.COMPLETED)
+            .where(
+                EvaluationResult.workspace_id == workspace_id,
+                EvaluationResult.status == ResultStatus.COMPLETED,
+            )
         )
         or 0
     )
     mean_quality = session.scalar(
         select(func.avg(EvaluationResult.aggregate_score)).where(
-            EvaluationResult.aggregate_score.is_not(None)
+            EvaluationResult.workspace_id == workspace_id,
+            EvaluationResult.aggregate_score.is_not(None),
         )
     )
     known_cost = session.scalar(
         select(func.sum(EvaluationResult.estimated_cost_micro_usd)).where(
-            EvaluationResult.estimated_cost_micro_usd.is_not(None)
+            EvaluationResult.workspace_id == workspace_id,
+            EvaluationResult.estimated_cost_micro_usd.is_not(None),
         )
     )
     known_cost_items = (
         session.scalar(
             select(func.count())
             .select_from(EvaluationResult)
-            .where(EvaluationResult.estimated_cost_micro_usd.is_not(None))
+            .where(
+                EvaluationResult.workspace_id == workspace_id,
+                EvaluationResult.estimated_cost_micro_usd.is_not(None),
+            )
         )
         or 0
     )
@@ -74,7 +102,10 @@ def build_overview(session: Session) -> dict[str, Any]:
         session.scalar(
             select(func.count())
             .select_from(EvaluationResult)
-            .where(EvaluationResult.cost_source == "billing_ambiguous")
+            .where(
+                EvaluationResult.workspace_id == workspace_id,
+                EvaluationResult.cost_source == "billing_ambiguous",
+            )
         )
         or 0
     )
@@ -82,12 +113,20 @@ def build_overview(session: Session) -> dict[str, Any]:
         session.scalar(
             select(func.count())
             .select_from(EvaluationResult)
-            .where(EvaluationResult.cost_source.in_(["usage_unavailable", "pricing_unavailable"]))
+            .where(
+                EvaluationResult.workspace_id == workspace_id,
+                EvaluationResult.cost_source.in_(["usage_unavailable", "pricing_unavailable"]),
+            )
         )
         or 0
     )
     recent = list(
-        session.scalars(select(EvaluationRun).order_by(EvaluationRun.created_at.desc()).limit(8))
+        session.scalars(
+            select(EvaluationRun)
+            .where(EvaluationRun.workspace_id == workspace_id)
+            .order_by(EvaluationRun.created_at.desc())
+            .limit(8)
+        )
     )
     return {
         "totals": {
@@ -121,11 +160,14 @@ def build_overview(session: Session) -> dict[str, Any]:
     }
 
 
-def build_run_comparison(session: Session, run_id: str) -> dict[str, Any]:
+def build_run_comparison(session: Session, workspace_id: str, run_id: str) -> dict[str, Any]:
     """Compare variants with explicit denominators and paired case deltas."""
     run = session.scalar(
         select(EvaluationRun)
-        .where(EvaluationRun.id == run_id)
+        .where(
+            EvaluationRun.id == run_id,
+            EvaluationRun.workspace_id == workspace_id,
+        )
         .options(
             selectinload(EvaluationRun.candidates),
             selectinload(EvaluationRun.results),

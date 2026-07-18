@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import math
+import uuid
 from collections.abc import Mapping
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import asdict, replace
 from hashlib import sha256
@@ -14,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm.exc import StaleDataError
 
+from evalforge.audit import AuditRecorder
 from evalforge.config import Settings
 from evalforge.database import SessionFactory, session_scope
 from evalforge.errors import CapabilityError, ConflictError, LimitError, NotFoundError
@@ -22,6 +25,7 @@ from evalforge.evaluation.adapters import (
     DeterministicAdapter,
     resolve_demo_profile,
 )
+from evalforge.evaluation.leases import LeaseClaim, LeaseLostError, LeaseManager
 from evalforge.evaluation.metrics import MetricRegistry, aggregate_metric_results
 from evalforge.evaluation.prompts import estimate_rendered_prompt_size, render_prompt
 from evalforge.evaluation.types import (
@@ -55,7 +59,7 @@ from evalforge.observability import get_logger
 from evalforge.repositories import (
     ConflictError as RepositoryConflictError,
 )
-from evalforge.repositories import EvaluationRunRepository
+from evalforge.repositories import EvaluationRunRepository, SystemEvaluationRunRepository
 from evalforge.repositories import (
     NotFoundError as RepositoryNotFoundError,
 )
@@ -67,6 +71,7 @@ from evalforge.schemas import (
     MetricConfiguration,
     validate_generation_parameters,
 )
+from evalforge.security.permissions import WorkspaceContext
 
 DEFAULT_METRIC_WEIGHTS: Mapping[str, float] = {
     "correctness": 1.0,
@@ -129,14 +134,18 @@ class EvaluationService:
         self.session_factory = session_factory
         self.adapters = adapters
         self.metrics = metrics
+        self.leases = LeaseManager(
+            session_factory,
+            lease_seconds=settings.worker_lease_seconds,
+        )
         self._generation_limit = asyncio.Semaphore(settings.max_concurrent_generations)
         self._logger = get_logger("evaluation_service")
 
-    def preflight(self, data: EvaluationRunCreate) -> dict[str, Any]:
+    def preflight(self, data: EvaluationRunCreate, context: WorkspaceContext) -> dict[str, Any]:
         """Validate the complete planned matrix before creating any billable work."""
         with self.session_factory() as session:
             snapshot, _dataset, _prompts, _models = self._preflight_in_session(
-                data, session, lock=False
+                data, session, context, lock=False
             )
             return snapshot
 
@@ -144,6 +153,7 @@ class EvaluationService:
         self,
         data: EvaluationRunCreate,
         session: Session,
+        context: WorkspaceContext,
         *,
         lock: bool,
     ) -> tuple[dict[str, Any], Dataset, list[PromptTemplate], list[ModelProfile]]:
@@ -152,14 +162,19 @@ class EvaluationService:
         self._validate_metric_configuration(configurations)
         dataset_statement = (
             select(Dataset)
-            .where(Dataset.id == str(data.dataset_id))
+            .where(
+                Dataset.id == str(data.dataset_id),
+                Dataset.workspace_id == context.workspace_id,
+            )
             .options(selectinload(Dataset.cases))
         )
         prompt_statement = select(PromptTemplate).where(
-            PromptTemplate.id.in_([str(item) for item in data.prompt_ids])
+            PromptTemplate.id.in_([str(item) for item in data.prompt_ids]),
+            PromptTemplate.workspace_id == context.workspace_id,
         )
         model_statement = select(ModelProfile).where(
-            ModelProfile.id.in_([str(item) for item in data.model_ids])
+            ModelProfile.id.in_([str(item) for item in data.model_ids]),
+            ModelProfile.workspace_id == context.workspace_id,
         )
         if lock:
             dataset_statement = dataset_statement.with_for_update()
@@ -262,6 +277,18 @@ class EvaluationService:
             raise CapabilityError("Real-provider evaluation is disabled on the server.")
         if real_models and not bool(getattr(data, "acknowledge_real_cost", False)):
             raise CapabilityError("Real-provider runs require an explicit cost acknowledgment.")
+        if real_models and not data.acknowledge_external_data_transfer:
+            raise CapabilityError(
+                "Real-provider runs require explicit external data-transfer consent."
+            )
+        if real_models and data.spend_limit_micro_usd is None:
+            raise CapabilityError("Real-provider runs require a user-selected spend ceiling.")
+        if (
+            real_models
+            and data.spend_limit_micro_usd is not None
+            and data.spend_limit_micro_usd > self.settings.max_estimated_cost_micro_usd_per_run
+        ):
+            raise LimitError("The user-selected spend ceiling exceeds the configured server cap.")
         for model in real_models:
             self._validate_real_model(model)
 
@@ -303,6 +330,12 @@ class EvaluationService:
             )
         if estimated_known_cost_micro_usd > self.settings.max_estimated_cost_micro_usd_per_run:
             raise LimitError("The estimated run cost exceeds the configured server budget.")
+        if (
+            real_models
+            and data.spend_limit_micro_usd is not None
+            and estimated_known_cost_micro_usd > data.spend_limit_micro_usd
+        ):
+            raise LimitError("The known-cost estimate exceeds the user-selected spend ceiling.")
         missing_reference = sum(not bool(case.expected_output) for case in dataset.cases)
         missing_context = sum(not bool(case.context_text) for case in dataset.cases)
         preflight_snapshot = {
@@ -312,6 +345,8 @@ class EvaluationService:
             "model_count": len(models),
             "variant_count": variant_count,
             "provider_call_count": call_count,
+            "automatic_provider_retries": 0,
+            "maximum_provider_request_count": call_count,
             "max_requested_output_tokens": max_output_tokens,
             "estimated_input_tokens": estimated_input_tokens,
             "input_token_estimate_method": INPUT_GUARD_METHOD,
@@ -320,6 +355,13 @@ class EvaluationService:
             "real_provider": bool(real_models),
             "real_provider_models": [model.name for model in real_models],
             "unknown_pricing_models": unknown_pricing,
+            "external_data_transfer_acknowledged": (
+                bool(data.acknowledge_external_data_transfer) if real_models else False
+            ),
+            "spend_limit_micro_usd": data.spend_limit_micro_usd if real_models else None,
+            "spend_limit_basis": (
+                "known_price_preflight_estimate" if real_models else "not_applicable"
+            ),
             "inapplicable_counts": {
                 "correctness": missing_reference,
                 "groundedness": missing_context,
@@ -342,7 +384,13 @@ class EvaluationService:
         }
         return preflight_snapshot, dataset, prompts, models
 
-    def create_run(self, data: EvaluationRunCreate) -> EvaluationRun:
+    def create_run(
+        self,
+        data: EvaluationRunCreate,
+        context: WorkspaceContext,
+        *,
+        request_id: str | None = None,
+    ) -> EvaluationRun:
         """Persist a validated run and its immutable candidate snapshots."""
         prepared = (
             data
@@ -354,7 +402,7 @@ class EvaluationService:
         )
         if prepared.idempotency_key is not None:
             with self.session_factory() as session:
-                existing = EvaluationRunRepository(session).find_by_idempotency_key(
+                existing = EvaluationRunRepository(session, context).find_by_idempotency_key(
                     prepared.idempotency_key
                 )
                 if existing is not None:
@@ -366,9 +414,10 @@ class EvaluationService:
         try:
             with session_scope(self.session_factory) as session:
                 preflight_snapshot, dataset, prompts, models = self._preflight_in_session(
-                    prepared, session, lock=True
+                    prepared, session, context, lock=True
                 )
-                return EvaluationRunRepository(session).create(
+                repository = EvaluationRunRepository(session, context)
+                run = repository.create(
                     prepared,
                     application_version=self.settings.application_version,
                     executor_type="persistent_local_worker",
@@ -377,10 +426,24 @@ class EvaluationService:
                     models_by_id={model.id: model for model in models},
                     preflight_snapshot=preflight_snapshot,
                 )
+                AuditRecorder(session).record(
+                    context,
+                    action="run.create",
+                    resource_type="evaluation_run",
+                    resource_id=run.id,
+                    outcome="success",
+                    request_id=request_id,
+                    metadata={
+                        "provider_call_count": run.total_items,
+                        "real_provider": bool(preflight_snapshot.get("real_provider")),
+                        "spend_limit_micro_usd": preflight_snapshot.get("spend_limit_micro_usd"),
+                    },
+                )
+                return run
         except RepositoryConflictError as exc:
             if prepared.idempotency_key is not None:
                 with self.session_factory() as session:
-                    existing = EvaluationRunRepository(session).find_by_idempotency_key(
+                    existing = EvaluationRunRepository(session, context).find_by_idempotency_key(
                         prepared.idempotency_key
                     )
                     if existing is not None and existing.request_hash == request_hash:
@@ -402,24 +465,49 @@ class EvaluationService:
                 )
             )
 
+    def claim_next(self, worker_id: str, *, run_id: str | None = None) -> LeaseClaim | None:
+        """Claim persisted work for one database worker."""
+
+        return self.leases.claim_next(worker_id, run_id=run_id)
+
+    def renew_claim(self, claim: LeaseClaim) -> LeaseClaim:
+        """Renew one active database claim."""
+
+        return self.leases.renew(claim)
+
     def recover_interrupted(self) -> int:
         """Mark previously in-flight work interrupted while preserving queued work."""
         with session_scope(self.session_factory) as session:
-            return EvaluationRunRepository(session).recover_abandoned(
+            return SystemEvaluationRunRepository(session).recover_abandoned(
                 reason="application restarted while work was in flight"
             )
 
-    def cancel_run(self, run_id: str) -> EvaluationRun:
+    def cancel_run(
+        self,
+        run_id: str,
+        context: WorkspaceContext,
+        *,
+        request_id: str | None = None,
+    ) -> EvaluationRun:
         """Cancel queued work immediately or request cooperative running cancellation."""
         for attempt in range(3):
             try:
                 with session_scope(self.session_factory) as session:
-                    repository = EvaluationRunRepository(session)
+                    repository = EvaluationRunRepository(session, context)
                     try:
                         run = repository.get(run_id, with_detail=True)
                     except RepositoryNotFoundError as exc:
                         raise NotFoundError("Evaluation run") from exc
                     if run.status.is_terminal:
+                        AuditRecorder(session).record(
+                            context,
+                            action="run.cancel",
+                            resource_type="evaluation_run",
+                            resource_id=run.id,
+                            outcome="no_change",
+                            request_id=request_id,
+                            metadata={"status": run.status.value},
+                        )
                         return run
                     if run.status is RunStatus.QUEUED:
                         run.transition_to(RunStatus.CANCELLED, reason="cancelled before execution")
@@ -435,6 +523,15 @@ class EvaluationService:
                                     RunStatus.CANCEL_REQUESTED,
                                     reason="run cancellation requested",
                                 )
+                    AuditRecorder(session).record(
+                        context,
+                        action="run.cancel",
+                        resource_type="evaluation_run",
+                        resource_id=run.id,
+                        outcome="success",
+                        request_id=request_id,
+                        metadata={"status": run.status.value},
+                    )
                     session.flush()
                     return run
             except StaleDataError:
@@ -444,44 +541,200 @@ class EvaluationService:
                     ) from None
         raise AssertionError("unreachable cancellation retry state")
 
-    async def execute_run(self, run_id: str) -> None:
-        """Execute all queued case/candidate pairs with bounded provider concurrency."""
-        try:
-            result_ids = self._prepare_execution(run_id)
-        except StaleDataError:
-            self._logger.info("run_claim_lost", run_id=run_id)
-            return
-        except Exception as exc:
-            self._fail_run_setup(run_id, exc)
-            return
-        if not result_ids:
-            return
-        try:
-            outcomes = await asyncio.gather(
-                *(self._execute_result(result_id) for result_id in result_ids),
-                return_exceptions=True,
-            )
-            for outcome in outcomes:
-                if isinstance(outcome, Exception):
-                    self._logger.error(
-                        "result_task_unhandled",
-                        run_id=run_id,
-                        error_type=type(outcome).__name__,
-                    )
-        finally:
-            self._refresh_progress(run_id)
+    async def execute_run(self, run_id: str, claim: LeaseClaim | None = None) -> None:
+        """Execute one claimed run; direct callers acquire the same database lease."""
 
-    def _prepare_execution(self, run_id: str) -> list[str]:
+        active_claim = claim or self.claim_next(f"direct-{uuid.uuid4().hex}", run_id=run_id)
+        if active_claim is None:
+            return
+        heartbeat = asyncio.create_task(
+            self._heartbeat_claim(active_claim),
+            name=f"evalforge-lease-heartbeat-{run_id}",
+        )
+        execution = asyncio.create_task(
+            self._execute_claimed_run(active_claim),
+            name=f"evalforge-claimed-run-{run_id}",
+        )
+        outcome = "completed"
+        error_type: str | None = None
+        close_attempt_only = False
+        try:
+            completed, _pending = await asyncio.wait(
+                {execution, heartbeat},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            execution_succeeded = (
+                execution in completed
+                and not execution.cancelled()
+                and execution.exception() is None
+            )
+            if execution_succeeded:
+                await execution
+            elif heartbeat in completed:
+                try:
+                    heartbeat_error = heartbeat.exception()
+                except asyncio.CancelledError:
+                    heartbeat_error = RuntimeError("lease heartbeat stopped unexpectedly")
+                if heartbeat_error is None:
+                    heartbeat_error = RuntimeError("lease heartbeat stopped unexpectedly")
+                if not execution.done():
+                    execution.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await execution
+                close_attempt_only = True
+                error_type = type(heartbeat_error).__name__
+                if isinstance(heartbeat_error, LeaseLostError):
+                    outcome = "lease_lost"
+                    self._logger.info("run_claim_lost", run_id=run_id)
+                else:
+                    outcome = "heartbeat_failed"
+                    self._logger.error(
+                        "run_heartbeat_failed",
+                        run_id=run_id,
+                        error_type=error_type,
+                    )
+            else:
+                await execution
+        except (LeaseLostError, StaleDataError) as exc:
+            outcome = "lease_lost"
+            error_type = type(exc).__name__
+            close_attempt_only = True
+            self._logger.info("run_claim_lost", run_id=run_id)
+        except asyncio.CancelledError:
+            outcome = "worker_cancelled"
+            error_type = "CancelledError"
+            raise
+        except Exception as exc:
+            outcome = "failed"
+            error_type = type(exc).__name__
+            try:
+                self._fail_run_setup(active_claim, exc)
+            except (LeaseLostError, StaleDataError) as finalizer_error:
+                outcome = "lease_lost"
+                error_type = type(finalizer_error).__name__
+                close_attempt_only = True
+                self._logger.info("run_claim_lost", run_id=run_id)
+        finally:
+            if not execution.done():
+                execution.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await execution
+            if heartbeat.done():
+                with suppress(asyncio.CancelledError):
+                    heartbeat.exception()
+            else:
+                heartbeat.cancel()
+                with suppress(asyncio.CancelledError):
+                    await heartbeat
+            if outcome != "worker_cancelled":
+                if close_attempt_only:
+                    self.leases.close_attempt(
+                        active_claim,
+                        outcome=outcome,
+                        error_type=error_type,
+                    )
+                else:
+                    self.leases.finish(
+                        active_claim,
+                        outcome=outcome,
+                        error_type=error_type,
+                    )
+
+    async def _execute_claimed_run(self, claim: LeaseClaim) -> None:
+        result_ids = self._prepare_execution(claim)
+        outcomes = await asyncio.gather(
+            *(self._execute_result(result_id, claim) for result_id in result_ids),
+            return_exceptions=True,
+        )
+        for result_outcome in outcomes:
+            if isinstance(result_outcome, (LeaseLostError, StaleDataError)):
+                raise result_outcome
+            if isinstance(result_outcome, Exception):
+                self._logger.error(
+                    "result_task_unhandled",
+                    run_id=claim.run_id,
+                    error_type=type(result_outcome).__name__,
+                )
+        self._refresh_progress(claim.run_id, claim)
+
+    async def _heartbeat_claim(self, claim: LeaseClaim) -> None:
+        while True:
+            await asyncio.sleep(self.settings.worker_heartbeat_seconds)
+            self.renew_claim(claim)
+
+    def _prepare_execution(self, claim: LeaseClaim) -> list[str]:
         with session_scope(self.session_factory) as session:
-            repository = EvaluationRunRepository(session)
-            run = repository.get(run_id, with_detail=True)
-            if run.status is not RunStatus.QUEUED:
+            self.leases.fence(session, claim)
+            repository = SystemEvaluationRunRepository(session)
+            run = repository.get(claim.run_id, with_detail=True)
+            if run.status.is_terminal:
                 return []
-            run.transition_to(RunStatus.RUNNING, reason="local worker claimed run")
+            if run.status is RunStatus.CANCEL_REQUESTED:
+                for result in run.results:
+                    if not result.status.is_terminal:
+                        if result.status is ResultStatus.RUNNING and result.output_text is None:
+                            result.error_type = "interrupted"
+                            result.error_message = "Cancellation followed an interrupted request."
+                            result.error_retryable = False
+                            result.estimated_cost_micro_usd = None
+                            result.cost_source = "billing_ambiguous"
+                            result.transition_to(
+                                ResultStatus.INTERRUPTED,
+                                reason="cancelled after interrupted provider request",
+                            )
+                        else:
+                            result.transition_to(
+                                ResultStatus.CANCELLED,
+                                reason="run cancellation requested",
+                            )
+                for candidate in run.candidates:
+                    if not candidate.status.is_terminal:
+                        candidate.transition_to(RunStatus.CANCELLED, reason="run cancelled")
+                run.completed_items = run.total_items
+                run.transition_to(RunStatus.CANCELLED, reason="cancellation completed")
+                return []
+            if run.status is RunStatus.QUEUED:
+                run.transition_to(RunStatus.RUNNING, reason="database worker claimed run")
+            elif run.status is not RunStatus.RUNNING:
+                return []
+
             result_ids: list[str] = []
+            if run.results:
+                for result in run.results:
+                    if result.status is ResultStatus.QUEUED or (
+                        result.status is ResultStatus.RUNNING and result.output_text is not None
+                    ):
+                        result_ids.append(result.id)
+                    elif (
+                        claim.takeover
+                        and result.status is ResultStatus.RUNNING
+                        and result.output_text is None
+                    ):
+                        result.error_type = "interrupted"
+                        result.error_message = "Worker ownership expired during provider execution."
+                        result.error_retryable = False
+                        result.estimated_cost_micro_usd = None
+                        result.cost_source = "billing_ambiguous"
+                        result.transition_to(
+                            ResultStatus.INTERRUPTED,
+                            reason="expired worker ownership with ambiguous provider state",
+                        )
+                for candidate in run.candidates:
+                    if candidate.status is RunStatus.QUEUED:
+                        candidate.transition_to(
+                            RunStatus.RUNNING,
+                            reason="candidate execution resumed",
+                        )
+                session.flush()
+                return result_ids
+
             cases = list(run.dataset_snapshot.get("cases", []))
             for candidate in sorted(run.candidates, key=lambda item: item.ordinal):
-                candidate.transition_to(RunStatus.RUNNING, reason="candidate execution started")
+                if candidate.status is RunStatus.QUEUED:
+                    candidate.transition_to(
+                        RunStatus.RUNNING,
+                        reason="candidate execution started",
+                    )
                 for case in cases:
                     rendered = render_prompt(
                         system_template=str(candidate.prompt_snapshot.get("system_template", "")),
@@ -491,6 +744,7 @@ class EvaluationService:
                         expected_output=case.get("expected_output"),
                     )
                     result = EvaluationResult(
+                        workspace_id=run.workspace_id,
                         run_id=run.id,
                         run_candidate_id=candidate.id,
                         test_case_id=str(case["id"]),
@@ -519,23 +773,30 @@ class EvaluationService:
             session.flush()
             return result_ids
 
-    async def _execute_result(self, result_id: str) -> None:
+    async def _execute_result(self, result_id: str, claim: LeaseClaim) -> None:
         async with self._generation_limit:
             provider_returned = False
             try:
-                prepared = self._load_and_start_result(result_id)
+                prepared = self._load_and_start_result(result_id, claim)
                 if prepared is None:
                     return
                 request, provider_name = prepared
+                if request is None:
+                    self._score_and_complete_result(result_id, claim)
+                    return
+                if provider_name is None:
+                    raise RuntimeError("provider name is missing")
                 if request.api_mode is AdapterApiMode.DEMO:
                     profile = _demo_profile(request.model)
                     response = await DeterministicAdapter(profile=profile).generate(request)
                 else:
                     response = await self.adapters.generate(provider_name, request)
                 provider_returned = True
-                self._persist_generation_evidence(result_id, response)
+                self._persist_generation_evidence(result_id, response, claim)
                 try:
-                    self._score_and_complete_result(result_id)
+                    self._score_and_complete_result(result_id, claim)
+                except (LeaseLostError, StaleDataError):
+                    raise
                 except Exception as exc:
                     self._logger.error(
                         "result_scoring_error",
@@ -544,6 +805,7 @@ class EvaluationService:
                     )
                     self._record_result_error(
                         result_id,
+                        claim,
                         error_type="scoring_error",
                         retryable=False,
                         retry_count=None,
@@ -561,16 +823,25 @@ class EvaluationService:
                 )
                 self._record_result_error(
                     result_id,
+                    claim,
                     error_type=exc.code,
                     retryable=exc.retryable,
                     retry_count=max(0, exc.attempts - 1),
                     cost_source=(
                         "billing_ambiguous"
-                        if exc.code in {"provider_timeout", "provider_upstream", "provider_error"}
+                        if exc.code
+                        in {
+                            "provider_timeout",
+                            "provider_upstream",
+                            "provider_error",
+                            "provider_rate_limited",
+                        }
                         else "not_incurred"
                     ),
                 )
             except asyncio.CancelledError:
+                raise
+            except (LeaseLostError, StaleDataError):
                 raise
             except Exception as exc:
                 self._logger.error(
@@ -581,11 +852,14 @@ class EvaluationService:
                 try:
                     self._record_result_error(
                         result_id,
+                        claim,
                         error_type="evaluation_error",
                         retryable=False,
                         retry_count=None,
                         cost_source=("billing_ambiguous" if provider_returned else "not_incurred"),
                     )
+                except (LeaseLostError, StaleDataError):
+                    raise
                 except Exception as finalizer_error:
                     self._logger.error(
                         "result_error_finalizer_failed",
@@ -594,7 +868,9 @@ class EvaluationService:
                     )
             finally:
                 try:
-                    self._refresh_progress_for_result(result_id)
+                    self._refresh_progress_for_result(result_id, claim)
+                except (LeaseLostError, StaleDataError):
+                    raise
                 except Exception as exc:
                     self._logger.error(
                         "result_progress_refresh_failed",
@@ -602,18 +878,38 @@ class EvaluationService:
                         error_type=type(exc).__name__,
                     )
 
-    def _load_and_start_result(self, result_id: str) -> tuple[GenerationRequest, str] | None:
+    def _load_and_start_result(
+        self,
+        result_id: str,
+        claim: LeaseClaim,
+    ) -> tuple[GenerationRequest | None, str | None] | None:
         with session_scope(self.session_factory) as session:
-            repository = EvaluationRunRepository(session)
+            self.leases.fence(session, claim)
+            repository = SystemEvaluationRunRepository(session)
             result = repository.get_result(result_id)
             run = repository.get(result.run_id)
             if run.status is RunStatus.CANCEL_REQUESTED:
-                result.transition_to(ResultStatus.CANCELLED, reason="run cancellation requested")
+                if not result.status.is_terminal:
+                    result.transition_to(
+                        ResultStatus.CANCELLED,
+                        reason="run cancellation requested",
+                    )
                 return None
             if run.status is not RunStatus.RUNNING:
-                result.transition_to(ResultStatus.INTERRUPTED, reason="run is not executable")
+                if not result.status.is_terminal:
+                    result.transition_to(
+                        ResultStatus.INTERRUPTED,
+                        reason="run is not executable",
+                    )
                 return None
-            result.transition_to(ResultStatus.RUNNING, reason="provider generation started")
+            if result.status is ResultStatus.RUNNING and result.output_text is not None:
+                return None, None
+            if result.status is not ResultStatus.QUEUED:
+                return None
+            result.transition_to(
+                ResultStatus.RUNNING,
+                reason="provider generation started",
+            )
             parameters = result.generation_parameters_snapshot
             model_snapshot = result.model_snapshot
             adapter_mode = _adapter_api_mode(str(model_snapshot["api_mode"]))
@@ -634,9 +930,15 @@ class EvaluationService:
             )
             return request, str(model_snapshot["provider"])
 
-    def _persist_generation_evidence(self, result_id: str, response: Any) -> None:
+    def _persist_generation_evidence(
+        self,
+        result_id: str,
+        response: Any,
+        claim: LeaseClaim,
+    ) -> None:
         with session_scope(self.session_factory) as session:
-            repository = EvaluationRunRepository(session)
+            self.leases.fence(session, claim)
+            repository = SystemEvaluationRunRepository(session)
             result = repository.get_result(result_id)
             if result.status is not ResultStatus.RUNNING:
                 return
@@ -671,9 +973,10 @@ class EvaluationService:
             result.provider_metadata = provider_metadata
             result.state_version += 1
 
-    def _score_and_complete_result(self, result_id: str) -> None:
+    def _score_and_complete_result(self, result_id: str, claim: LeaseClaim) -> None:
         with session_scope(self.session_factory) as session:
-            repository = EvaluationRunRepository(session)
+            self.leases.fence(session, claim)
+            repository = SystemEvaluationRunRepository(session)
             result = repository.get_result(result_id)
             if result.status is not ResultStatus.RUNNING:
                 return
@@ -713,6 +1016,7 @@ class EvaluationService:
     def _record_result_error(
         self,
         result_id: str,
+        claim: LeaseClaim,
         *,
         error_type: str,
         retryable: bool,
@@ -721,7 +1025,8 @@ class EvaluationService:
         cost_source: str | None = None,
     ) -> None:
         with session_scope(self.session_factory) as session:
-            result = EvaluationRunRepository(session).get_result(result_id)
+            self.leases.fence(session, claim)
+            result = SystemEvaluationRunRepository(session).get_result(result_id)
             if result.status.is_terminal:
                 return
             result.error_type = error_type[:100]
@@ -734,17 +1039,20 @@ class EvaluationService:
                 result.cost_source = cost_source
             result.transition_to(ResultStatus.ERROR, reason="provider or evaluator error")
 
-    def _refresh_progress_for_result(self, result_id: str) -> None:
-        with self.session_factory() as session:
-            result = EvaluationRunRepository(session).get_result(result_id)
+    def _refresh_progress_for_result(self, result_id: str, claim: LeaseClaim) -> None:
+        with session_scope(self.session_factory) as session:
+            self.leases.fence(session, claim)
+            result = SystemEvaluationRunRepository(session).get_result(result_id)
             run_id = result.run_id
-        self._refresh_progress(run_id)
+        self._refresh_progress(run_id, claim)
 
-    def _refresh_progress(self, run_id: str) -> None:
+    def _refresh_progress(self, run_id: str, claim: LeaseClaim) -> None:
         for attempt in range(5):
             try:
-                self._refresh_progress_once(run_id)
+                self._refresh_progress_once(run_id, claim)
                 return
+            except LeaseLostError:
+                raise
             except StaleDataError:
                 if attempt == 4:
                     self._logger.error(
@@ -752,10 +1060,12 @@ class EvaluationService:
                         run_id=run_id,
                         attempts=attempt + 1,
                     )
+                    raise
 
-    def _refresh_progress_once(self, run_id: str) -> None:
+    def _refresh_progress_once(self, run_id: str, claim: LeaseClaim) -> None:
         with session_scope(self.session_factory) as session:
-            repository = EvaluationRunRepository(session)
+            self.leases.fence(session, claim)
+            repository = SystemEvaluationRunRepository(session)
             run = repository.get(run_id, with_candidates=True)
             terminal = {status for status in ResultStatus if status.is_terminal}
             grouped_rows = session.execute(
@@ -781,7 +1091,9 @@ class EvaluationService:
                 for candidate_counts in counts.values()
             )
             failed_items = sum(
-                candidate_counts.get(ResultStatus.ERROR, 0) for candidate_counts in counts.values()
+                candidate_counts.get(ResultStatus.ERROR, 0)
+                + candidate_counts.get(ResultStatus.INTERRUPTED, 0)
+                for candidate_counts in counts.values()
             )
             if (run.completed_items, run.succeeded_items, run.failed_items) != (
                 completed_items,
@@ -799,7 +1111,9 @@ class EvaluationService:
                     for result_status, count in candidate_counts.items()
                     if result_status in terminal
                 )
-                candidate_failed = candidate_counts.get(ResultStatus.ERROR, 0)
+                candidate_failed = candidate_counts.get(
+                    ResultStatus.ERROR, 0
+                ) + candidate_counts.get(ResultStatus.INTERRUPTED, 0)
                 if (candidate.completed_items, candidate.failed_items) != (
                     candidate_completed,
                     candidate_failed,
@@ -835,14 +1149,15 @@ class EvaluationService:
                 run.transition_to(RunStatus.COMPLETED, reason="run completed")
             session.flush()
 
-    def _fail_run_setup(self, run_id: str, error: Exception) -> None:
+    def _fail_run_setup(self, claim: LeaseClaim, error: Exception) -> None:
         with session_scope(self.session_factory) as session:
-            repository = EvaluationRunRepository(session)
+            self.leases.fence(session, claim)
+            repository = SystemEvaluationRunRepository(session)
             try:
-                run = repository.get(run_id, with_candidates=True)
+                run = repository.get(claim.run_id, with_candidates=True)
             except RepositoryNotFoundError:
                 return
-            if run.status is not RunStatus.QUEUED:
+            if run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
                 return
             run.transition_to(RunStatus.FAILED, reason="run setup failed")
             run.error_type = type(error).__name__[:100]

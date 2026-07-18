@@ -6,7 +6,7 @@ import math
 from collections.abc import Mapping
 from datetime import datetime
 from string import Formatter
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 from uuid import UUID
 
 from jsonschema import SchemaError
@@ -362,6 +362,7 @@ class TestCaseUpdate(StrictSchema):
 
 class TestCaseRead(TestCaseBase):
     id: UUID
+    workspace_id: UUID
     dataset_id: UUID
     case_hash: str = Field(min_length=64, max_length=64)
     created_at: datetime
@@ -402,6 +403,7 @@ class DatasetUpdate(StrictSchema):
 
 class DatasetRead(DatasetBase):
     id: UUID
+    workspace_id: UUID
     content_hash: str = Field(min_length=64, max_length=64)
     created_at: datetime
     updated_at: datetime
@@ -462,6 +464,7 @@ class PromptTemplateUpdate(StrictSchema):
 
 class PromptTemplateRead(PromptTemplateBase):
     id: UUID
+    workspace_id: UUID
     variables: list[str]
     template_hash: str = Field(min_length=64, max_length=64)
     created_at: datetime
@@ -535,6 +538,7 @@ class ModelProfileUpdate(StrictSchema):
 
 class ModelProfileRead(ModelProfileBase):
     id: UUID
+    workspace_id: UUID
     profile_hash: str = Field(min_length=64, max_length=64)
     created_at: datetime
     updated_at: datetime
@@ -580,6 +584,8 @@ class EvaluationRunCreate(StrictSchema):
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=255)
     acknowledge_real_cost: bool = False
     acknowledge_unknown_cost: bool = False
+    acknowledge_external_data_transfer: bool = False
+    spend_limit_micro_usd: int | None = Field(default=None, ge=1, le=1_000_000_000_000)
 
     @field_validator("prompt_ids", "model_ids")
     @classmethod
@@ -591,6 +597,7 @@ class EvaluationRunCreate(StrictSchema):
 
 class RunCandidateRead(StrictSchema):
     id: UUID
+    workspace_id: UUID
     run_id: UUID
     prompt_template_id: UUID
     model_profile_id: UUID
@@ -619,6 +626,7 @@ class RunCandidateRead(StrictSchema):
 
 class EvaluationResultRead(StrictSchema):
     id: UUID
+    workspace_id: UUID
     run_id: UUID
     run_candidate_id: UUID
     test_case_id: UUID
@@ -667,6 +675,7 @@ class EvaluationResultRead(StrictSchema):
 
 class EvaluationRunRead(StrictSchema):
     id: UUID
+    workspace_id: UUID
     name: str | None
     dataset_id: UUID
     dataset_snapshot: JSONDict
@@ -705,6 +714,7 @@ class EvaluationRunDetail(EvaluationRunRead):
 
 class EvaluationRunSummary(StrictSchema):
     id: UUID
+    workspace_id: UUID
     name: str | None
     dataset_id: UUID
     dataset_hash: str
@@ -739,6 +749,8 @@ class EvaluationRunPreflightRead(StrictSchema):
     model_count: int = Field(ge=1)
     variant_count: int = Field(ge=1)
     provider_call_count: int = Field(ge=1)
+    automatic_provider_retries: Literal[0]
+    maximum_provider_request_count: int = Field(ge=1)
     max_requested_output_tokens: int = Field(ge=1)
     estimated_input_tokens: int = Field(ge=1)
     input_token_estimate_method: str
@@ -747,6 +759,9 @@ class EvaluationRunPreflightRead(StrictSchema):
     real_provider: bool
     real_provider_models: list[str]
     unknown_pricing_models: list[str]
+    external_data_transfer_acknowledged: bool
+    spend_limit_micro_usd: int | None = Field(default=None, ge=1)
+    spend_limit_basis: str
     inapplicable_counts: dict[str, int]
     limits: dict[str, int]
 
@@ -756,7 +771,22 @@ class MetaRead(StrictSchema):
     environment: str
     database_backend: str
     executor: str
+    auth_mode: str
     registered_adapters: list[str]
+
+
+class WorkspaceAccessRead(StrictSchema):
+    id: UUID
+    name: str
+    role: str
+
+
+class SessionRead(StrictSchema):
+    user_id: UUID
+    display_name: str
+    email: str | None = None
+    auth_mode: str
+    workspaces: list[WorkspaceAccessRead]
 
 
 class Page(StrictSchema, Generic[PageItemT]):

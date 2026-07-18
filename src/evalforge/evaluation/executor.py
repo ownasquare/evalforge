@@ -1,8 +1,9 @@
-"""Replaceable persisted local run executor."""
+"""Database-discovered execution workers and API-only signaling."""
 
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Protocol
@@ -18,69 +19,149 @@ class RunExecutor(Protocol):
 
     async def close(self) -> None: ...
 
+    @property
+    def healthy(self) -> bool: ...
+
+    @property
+    def role(self) -> str: ...
+
+    @property
+    def worker_observed(self) -> bool: ...
+
 
 class LocalRunExecutor:
-    """Claim queued database runs through one in-process FIFO worker."""
+    """Poll and claim committed database work through one embedded worker."""
 
-    def __init__(self, service: EvaluationService) -> None:
+    def __init__(
+        self,
+        service: EvaluationService,
+        *,
+        poll_interval_seconds: float = 0.5,
+        worker_id: str | None = None,
+        role: str = "embedded_single",
+    ) -> None:
+        if not 0.1 <= poll_interval_seconds <= 30:
+            raise ValueError("poll interval must be between 0.1 and 30 seconds")
         self.service = service
-        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self.poll_interval_seconds = poll_interval_seconds
+        self.worker_id = worker_id or f"worker-{uuid.uuid4().hex}"
+        self._role = role
+        self._wake = asyncio.Event()
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
-        self._queued_ids: set[str] = set()
+        self._busy = False
 
     async def start(self) -> None:
         if self._worker is not None:
             return
-        self.service.recover_interrupted()
-        for run_id in self.service.pending_run_ids():
-            await self._enqueue_once(run_id)
-        self._worker = asyncio.create_task(self._run(), name="evalforge-local-run-worker")
-
-    async def submit(self, run_id: str) -> None:
         if self._closed:
             raise RuntimeError("run executor is closed")
-        await self._enqueue_once(run_id)
+        self._worker = asyncio.create_task(
+            self._run(),
+            name=f"evalforge-database-worker-{self.worker_id}",
+        )
+        self._wake.set()
+
+    async def submit(self, run_id: str) -> None:
+        """Accelerate polling; the committed database row remains queue authority."""
+
+        del run_id
+        if self._closed:
+            raise RuntimeError("run executor is closed")
+        self._wake.set()
 
     async def close(self) -> None:
         self._closed = True
+        self._wake.set()
         if self._worker is None:
             return
-        self._worker.cancel()
-        with suppress(asyncio.CancelledError):
-            await self._worker
+        worker = self._worker
+        done, _pending = await asyncio.wait({worker}, timeout=2)
+        if not done:
+            worker.cancel()
+            with suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(worker, timeout=2)
         self._worker = None
 
     async def wait_idle(self) -> None:
-        """Wait until queued work completes; intended for deterministic tests and CLI use."""
-        await self._queue.join()
+        """Wait for this worker and all currently queued persisted work."""
+
+        while self._busy or self.service.pending_run_ids():
+            self._wake.set()
+            await asyncio.sleep(min(self.poll_interval_seconds, 0.1))
 
     @property
     def healthy(self) -> bool:
-        """Report whether the single local worker can still accept queued work."""
         return not self._closed and self._worker is not None and not self._worker.done()
 
-    async def _enqueue_once(self, run_id: str) -> None:
-        if run_id in self._queued_ids:
-            return
-        self._queued_ids.add(run_id)
-        await self._queue.put(run_id)
+    @property
+    def role(self) -> str:
+        return self._role
+
+    @property
+    def worker_observed(self) -> bool:
+        return True
 
     async def _run(self) -> None:
         logger = get_logger("run_executor")
-        while True:
-            run_id = await self._queue.get()
+        while not self._closed:
+            claim = self.service.claim_next(self.worker_id)
+            if claim is None:
+                self._wake.clear()
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        self._wake.wait(),
+                        timeout=self.poll_interval_seconds,
+                    )
+                continue
+            self._busy = True
             try:
-                await self.service.execute_run(run_id)
+                await self.service.execute_run(claim.run_id, claim)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 logger.error(
                     "run_execution_unhandled",
-                    run_id=run_id,
+                    run_id=claim.run_id,
                     error_type=type(exc).__name__,
                 )
             finally:
-                self._queued_ids.discard(run_id)
-                self._queue.task_done()
+                self._busy = False
+
+
+class ApiOnlyRunExecutor:
+    """Accept persisted submissions while leaving execution to another process."""
+
+    def __init__(self) -> None:
+        self._started = False
+        self._closed = False
+
+    async def start(self) -> None:
+        if self._closed:
+            raise RuntimeError("run executor is closed")
+        self._started = True
+
+    async def submit(self, run_id: str) -> None:
+        del run_id
+        if self._closed:
+            raise RuntimeError("run executor is closed")
+
+    async def close(self) -> None:
+        self._closed = True
+
+    @property
+    def healthy(self) -> bool:
+        return self._started and not self._closed
+
+    @property
+    def role(self) -> str:
+        return "api_only"
+
+    @property
+    def worker_observed(self) -> bool:
+        """API-only mode cannot infer the health of a separate worker process."""
+
+        return False
 
 
 async def run_with_executor(
@@ -88,6 +169,7 @@ async def run_with_executor(
     work: Callable[[LocalRunExecutor], Awaitable[None]],
 ) -> None:
     """Small lifecycle helper for integration tests and command-line workflows."""
+
     await executor.start()
     try:
         await work(executor)

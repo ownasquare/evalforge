@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Response, status
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from evalforge.api.dependencies import ContainerDep
+from evalforge.api.dependencies import ContainerDep, ViewerWorkspaceDep
 from evalforge.container import container_summary
 from evalforge.database import check_database_readiness
 from evalforge.evaluation.service import default_metric_configurations
@@ -25,13 +25,23 @@ def ready(container: ContainerDep, response: Response) -> dict[str, object]:
         database_ready = check_database_readiness(container.engine)
     except Exception:
         database_ready = False
-    worker_ready = container.executor.healthy
-    if not database_ready or not worker_ready:
+    executor_ready = container.executor.healthy
+    service_ready = database_ready and executor_ready
+    worker_observed = container.executor.worker_observed
+    if not service_ready:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return {
-        "status": "ready" if database_ready and worker_ready else "not_ready",
+        "status": "ready" if service_ready else "not_ready",
         "database": "ready" if database_ready else "unavailable",
-        "worker": "ready" if worker_ready else "unavailable",
+        "worker": (
+            "ready"
+            if worker_observed and executor_ready
+            else "unavailable"
+            if worker_observed
+            else "external_unobserved"
+        ),
+        "worker_observed": worker_observed,
+        "executor_role": container.executor.role,
     }
 
 
@@ -41,13 +51,13 @@ def metrics() -> Response:
 
 
 @router.get("/api/v1/meta", response_model=MetaRead)
-def meta(container: ContainerDep) -> dict[str, object]:
+def meta(container: ContainerDep, _workspace: ViewerWorkspaceDep) -> dict[str, object]:
     """Return stable, non-secret build and execution metadata."""
     return container_summary(container)
 
 
 @router.get("/api/v1/capabilities")
-def capabilities(container: ContainerDep) -> dict[str, object]:
+def capabilities(container: ContainerDep, _workspace: ViewerWorkspaceDep) -> dict[str, object]:
     settings = container.settings
     return {
         **container_summary(container),
@@ -66,6 +76,11 @@ def capabilities(container: ContainerDep) -> dict[str, object]:
             "input_token_overhead_per_request": settings.input_token_overhead_per_request,
             "max_rendered_prompt_chars_per_call": (settings.max_rendered_prompt_chars_per_call),
             "max_estimated_cost_micro_usd_per_run": (settings.max_estimated_cost_micro_usd_per_run),
+        },
+        "provider_safety": {
+            "external_data_transfer_consent_required": True,
+            "user_spend_limit_required": True,
+            "spend_limit_basis": "known_price_preflight_estimate",
         },
         "proof": {
             "demo_mode": "deterministic_fixture_backed",

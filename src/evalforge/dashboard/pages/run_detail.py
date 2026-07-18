@@ -40,7 +40,7 @@ from evalforge.dashboard.pages.common import (
     nested_summary,
     run_label,
 )
-from evalforge.dashboard.state import select_run, selected_run_id
+from evalforge.dashboard.state import can_edit, select_run, selected_run_id
 
 
 def render() -> None:
@@ -169,7 +169,7 @@ def _render_run_header(run: dict[str, Any], api: Any) -> None:
 
     _render_export_controls(resource_id(run), api)
 
-    if not is_terminal_status(status):
+    if not is_terminal_status(status) and can_edit():
         with st.expander("Run controls", icon=":material/tune:"):
             confirm_cancel = st.checkbox(
                 "I want to cancel this active evaluation.",
@@ -195,59 +195,138 @@ def _render_export_controls(run_id: str, api: Any) -> None:
     if not run_id:
         return
     with st.expander("Export evidence", icon=":material/download:"):
-        st.caption("Download the immutable run record or a flat case-results table.")
+        st.caption(
+            "Create a versioned, tamper-evident evidence package for review, or download "
+            "the underlying record in a familiar format. Nothing is sent to another service."
+        )
+        disclosure_profile = st.selectbox(
+            "Export contents",
+            options=["content_redacted", "full_evidence"],
+            format_func=lambda value: (
+                "Scores and metadata — recommended"
+                if value == "content_redacted"
+                else "Full stored content"
+            ),
+            key=f"package-profile-{run_id}",
+            help=(
+                "The recommended export replaces prompts, inputs, references, outputs, and "
+                "context with redaction markers while retaining scores, hashes, and provenance."
+            ),
+        )
+        full_evidence_confirmed = True
+        if disclosure_profile == "full_evidence":
+            st.warning(
+                "Full evidence can contain prompts, test inputs, references, context, and model "
+                "outputs. Review your data-handling policy before sharing it."
+            )
+            full_evidence_confirmed = st.checkbox(
+                "I understand that these exports include stored evaluation content.",
+                key=f"package-full-confirm-{run_id}",
+            )
+        if st.button(
+            "Prepare evidence package",
+            disabled=not full_evidence_confirmed,
+            icon=":material/verified:",
+            key=f"prepare-run-package-{run_id}",
+            width="stretch",
+        ):
+            _prepare_export(
+                api,
+                run_id,
+                "package",
+                disclosure_profile=disclosure_profile,
+            )
+        package_data = _prepared_export(
+            run_id,
+            "package",
+            disclosure_profile=disclosure_profile,
+        )
+        if package_data is not None:
+            st.download_button(
+                "Download evidence package",
+                data=package_data,
+                file_name=f"evaluation-{run_id}-{disclosure_profile}.json",
+                mime="application/vnd.evalforge.run-export+json",
+                key=f"download-run-package-{run_id}-{disclosure_profile}",
+                width="stretch",
+            )
+
+        st.divider()
+        st.caption("JSON and CSV use the same content choice and sharing safeguard.")
         json_column, csv_column = st.columns(2)
         with json_column:
             if st.button(
                 "Prepare JSON",
+                disabled=not full_evidence_confirmed,
                 key=f"prepare-run-json-{run_id}",
                 width="stretch",
             ):
-                _prepare_export(api, run_id, "json")
-            json_data = _prepared_export(run_id, "json")
+                _prepare_export(api, run_id, "json", disclosure_profile=disclosure_profile)
+            json_data = _prepared_export(run_id, "json", disclosure_profile=disclosure_profile)
             if json_data is not None:
                 st.download_button(
                     "Download JSON",
                     data=json_data,
-                    file_name=f"evaluation-{run_id}.json",
+                    file_name=f"evaluation-{run_id}-{disclosure_profile}.json",
                     mime="application/json",
-                    key=f"download-run-json-{run_id}",
+                    key=f"download-run-json-{run_id}-{disclosure_profile}",
                     width="stretch",
                 )
         with csv_column:
             if st.button(
                 "Prepare CSV",
+                disabled=not full_evidence_confirmed,
                 key=f"prepare-run-csv-{run_id}",
                 width="stretch",
             ):
-                _prepare_export(api, run_id, "csv")
-            csv_data = _prepared_export(run_id, "csv")
+                _prepare_export(api, run_id, "csv", disclosure_profile=disclosure_profile)
+            csv_data = _prepared_export(run_id, "csv", disclosure_profile=disclosure_profile)
             if csv_data is not None:
                 st.download_button(
                     "Download CSV",
                     data=csv_data,
-                    file_name=f"evaluation-{run_id}.csv",
+                    file_name=f"evaluation-{run_id}-{disclosure_profile}.csv",
                     mime="text/csv",
-                    key=f"download-run-csv-{run_id}",
+                    key=f"download-run-csv-{run_id}-{disclosure_profile}",
                     width="stretch",
                 )
 
 
-def _prepare_export(api: Any, run_id: str, export_format: str) -> None:
+def _prepare_export(
+    api: Any,
+    run_id: str,
+    export_format: str,
+    *,
+    disclosure_profile: str = "content_redacted",
+) -> None:
     try:
-        data = api.export_run(run_id, export_format=export_format)
+        data = api.export_run(
+            run_id,
+            export_format=export_format,
+            disclosure_profile=disclosure_profile,
+        )
     except ApiError as error:
         render_api_error(error, title=f"The {export_format.upper()} export could not be prepared")
         return
     st.session_state[f"_evalforge_run_export_{export_format}"] = {
         "run_id": run_id,
+        "disclosure_profile": disclosure_profile,
         "data": data,
     }
 
 
-def _prepared_export(run_id: str, export_format: str) -> bytes | None:
+def _prepared_export(
+    run_id: str,
+    export_format: str,
+    *,
+    disclosure_profile: str = "content_redacted",
+) -> bytes | None:
     value = st.session_state.get(f"_evalforge_run_export_{export_format}")
-    if not isinstance(value, dict) or value.get("run_id") != run_id:
+    if (
+        not isinstance(value, dict)
+        or value.get("run_id") != run_id
+        or value.get("disclosure_profile") != disclosure_profile
+    ):
         return None
     data = value.get("data")
     return data if isinstance(data, bytes) else None

@@ -5,16 +5,15 @@ from __future__ import annotations
 import uvicorn
 
 from evalforge.config import get_settings
-from evalforge.container import apply_migrations
 
 
 def main() -> None:
-    """Upgrade the schema before starting the production-shaped local service."""
-    apply_migrations(get_settings())
+    """Start the API; its application lifespan owns optional schema migration."""
+    settings = get_settings()
     uvicorn.run(
         "evalforge.api.app:app",
-        host="0.0.0.0",  # noqa: S104 - container ingress is loopback-published by Compose.
-        port=8000,
+        host=settings.api_host,
+        port=settings.api_port,
         workers=1,
         access_log=False,
     )

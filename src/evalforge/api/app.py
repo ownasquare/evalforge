@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from evalforge import __version__
-from evalforge.api.routes import analytics, datasets, health, models, prompts, runs
+from evalforge.api.routes import analytics, datasets, health, models, prompts, runs, session
 from evalforge.config import Settings, get_settings
 from evalforge.container import AppContainer, build_container
 from evalforge.errors import EvalForgeError
@@ -35,6 +35,7 @@ from evalforge.repositories import (
 from evalforge.repositories import (
     ValidationError as RepositoryValidationError,
 )
+from evalforge.security.permissions import local_workspace_context
 from evalforge.seed import seed_demo
 
 ContainerFactory = Callable[[Settings], AppContainer]
@@ -47,9 +48,11 @@ def _error_response(
     status_code: int,
     retryable: bool = False,
     details: list[dict[str, Any]] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
+        headers=headers,
         content={
             "error": {
                 "code": code,
@@ -81,7 +84,7 @@ def create_app(
             if resolved_settings.seed_demo:
                 session = resources.session_factory()
                 try:
-                    seed_demo(session)
+                    seed_demo(session, local_workspace_context())
                     session.commit()
                 finally:
                     session.close()
@@ -110,7 +113,13 @@ def create_app(
         allow_origins=resolved_settings.cors_origin_strings,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["Content-Type", "Idempotency-Key", "X-Request-ID"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Idempotency-Key",
+            "X-EvalForge-Workspace-ID",
+            "X-Request-ID",
+        ],
         expose_headers=["Location", "X-Request-ID"],
     )
     application.add_middleware(
@@ -130,6 +139,7 @@ def create_app(
             status_code=error.status_code,
             retryable=error.retryable,
             details=error.details,
+            headers=getattr(error, "headers", None),
         )
 
     @application.exception_handler(RepositoryNotFoundError)
@@ -176,6 +186,7 @@ def create_app(
         )
 
     application.include_router(health.router)
+    application.include_router(session.router, prefix="/api/v1")
     application.include_router(datasets.router, prefix="/api/v1")
     application.include_router(prompts.router, prefix="/api/v1")
     application.include_router(models.router, prefix="/api/v1")

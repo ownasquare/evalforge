@@ -20,10 +20,35 @@ class Base(DeclarativeBase):
 
 
 SessionFactory = sessionmaker[Session]
-EXPECTED_SCHEMA_REVISION = "0002_preflight_context_cost_ack"
+EXPECTED_SCHEMA_REVISION = "0004_durable_execution_leases"
 REQUIRED_SCHEMA_COLUMNS = {
-    "evaluation_runs": {"preflight_snapshot", "acknowledge_unknown_cost"},
-    "test_cases": {"context_chunks"},
+    "evaluation_runs": {
+        "preflight_snapshot",
+        "acknowledge_unknown_cost",
+        "workspace_id",
+        "requested_by_user_id",
+        "lease_owner",
+        "lease_token",
+        "lease_epoch",
+        "lease_expires_at",
+        "claim_attempts",
+        "next_claim_at",
+    },
+    "test_cases": {"context_chunks", "workspace_id"},
+    "datasets": {"workspace_id"},
+    "prompt_templates": {"workspace_id"},
+    "model_profiles": {"workspace_id"},
+    "run_candidates": {"workspace_id"},
+    "evaluation_results": {"workspace_id"},
+    "execution_attempts": {
+        "workspace_id",
+        "run_id",
+        "lease_owner",
+        "lease_token",
+        "lease_epoch",
+        "heartbeat_at",
+        "outcome",
+    },
 }
 
 

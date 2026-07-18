@@ -48,7 +48,11 @@ jobs:
 
   postgres:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
     services:
       postgres:
         image: postgres:17-alpine
@@ -66,16 +70,21 @@ jobs:
     env:
       EVALFORGE_ENVIRONMENT: test
       EVALFORGE_DATABASE_URL: postgresql+psycopg://evalforge:evalforge-test@127.0.0.1:5432/evalforge
+      EVALFORGE_POSTGRES_TEST_URL: postgresql+psycopg://evalforge:evalforge-test@127.0.0.1:5432/evalforge
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.8.17"
           enable-cache: true
-      - run: uv python install 3.11
-      - run: uv sync --all-groups --extra postgres --frozen
+      - run: uv python install ${{ matrix.python-version }}
+      - run: uv sync --python "${{ matrix.python-version }}" --all-groups --extra postgres --frozen
+      - run: uv run alembic upgrade head
+      - run: uv run alembic check
       - run: uv run evalforge seed
       - run: uv run evalforge doctor
+      - run: uv run ruff check tests/integration/test_postgresql.py
+      - run: uv run pytest -q tests/integration/test_postgresql.py tests/contract/test_project_contract.py tests/contract/test_compose_contract.py
 
   e2e:
     runs-on: ubuntu-latest
@@ -93,7 +102,7 @@ jobs:
       - name: Run deterministic browser smoke
         run: |
           uv run uvicorn evalforge.api.app:app --host 127.0.0.1 --port 8000 --workers 1 > /tmp/evalforge-api.log 2>&1 &
-          uv run streamlit run src/evalforge/dashboard/app.py --server.address 127.0.0.1 --server.port 8501 > /tmp/evalforge-ui.log 2>&1 &
+          uv run streamlit run src/evalforge/streamlit_app.py --server.address 127.0.0.1 --server.port 8501 > /tmp/evalforge-ui.log 2>&1 &
           uv run python scripts/wait_for_http.py http://127.0.0.1:8000/health/ready
           uv run python scripts/wait_for_http.py http://127.0.0.1:8501/_stcore/health
           uv run pytest -q -m e2e tests/e2e

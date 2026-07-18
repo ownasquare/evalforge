@@ -7,6 +7,7 @@ database connections, and model execution remain exclusively in FastAPI.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -71,17 +72,73 @@ class ApiClient:
         transport: httpx.BaseTransport | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        access_token: str | None = None,
+        access_token_provider: Callable[[], str | None] | None = None,
+        identity_fingerprint: str | None = None,
+        workspace_id: str | None = None,
+        on_unauthorized: Callable[[], None] | None = None,
     ) -> None:
         self.base_url = self.validate_base_url(base_url)
+        if access_token is not None and access_token_provider is not None:
+            raise ValueError("Provide either access_token or access_token_provider, not both")
         if max_read_attempts < 1:
             raise ValueError("max_read_attempts must be at least one")
         if timeout_seconds <= 0 or connect_timeout_seconds <= 0:
             raise ValueError("timeouts must be positive")
+        validated_token = _validated_header_value(
+            access_token,
+            name="access token",
+            maximum=16_384,
+        )
+        self.workspace_id = _validated_header_value(
+            workspace_id,
+            name="workspace ID",
+            maximum=256,
+        )
+        self._access_token_provider: Callable[[], str | None] | None
+        if access_token_provider is not None:
+            self._access_token_provider = access_token_provider
+        elif validated_token is not None:
+
+            def static_token_provider() -> str | None:
+                return validated_token
+
+            self._access_token_provider = static_token_provider
+        else:
+            self._access_token_provider = None
+        fingerprint_token = validated_token
+        if (
+            fingerprint_token is None
+            and access_token_provider is not None
+            and identity_fingerprint is None
+        ):
+            try:
+                fingerprint_token = _validated_header_value(
+                    access_token_provider(),
+                    name="access token",
+                    maximum=16_384,
+                )
+            except Exception as error:
+                raise ValueError("access_token_provider did not return a valid token") from error
+            if fingerprint_token is None:
+                raise ValueError(
+                    "identity_fingerprint is required when the token provider has no token"
+                )
+        derived_fingerprint = (
+            _token_fingerprint(fingerprint_token) if fingerprint_token is not None else "local"
+        )
+        self.identity_fingerprint = _validated_fingerprint(
+            identity_fingerprint or derived_fingerprint
+        )
+        self._on_unauthorized = on_unauthorized
+        self._unauthorized_notified = False
         self._max_read_attempts = max_read_attempts
         self._cache_ttl_seconds = max(0.0, cache_ttl_seconds)
         self._sleeper = sleeper
         self._clock = clock
-        self._cache: dict[tuple[str, tuple[tuple[str, str], ...]], _CacheEntry] = {}
+        self._cache: dict[
+            tuple[str, str | None, str, tuple[tuple[str, str], ...]], _CacheEntry
+        ] = {}
         timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout_seconds)
         self._client = httpx.Client(
             base_url=self.base_url,
@@ -92,6 +149,15 @@ class ApiClient:
                 "Accept": "application/json",
                 "User-Agent": "EvalForge-Dashboard/0.1",
             },
+        )
+
+    def __repr__(self) -> str:
+        """Return useful connection context without credential material."""
+
+        return (
+            f"ApiClient(base_url={self.base_url!r}, "
+            f"identity_fingerprint={self.identity_fingerprint!r}, "
+            f"workspace_id={self.workspace_id!r})"
         )
 
     @staticmethod
@@ -131,6 +197,12 @@ class ApiClient:
 
     def capabilities(self) -> JsonObject:
         return self._get_object("/api/v1/capabilities")
+
+    def session(self) -> JsonObject:
+        return self._get_object("/api/v1/session", cache_ttl=1.0)
+
+    def workspaces(self) -> JsonObject | list[Any]:
+        return self._get_json("/api/v1/workspaces", cache_ttl=1.0)
 
     def overview(self) -> JsonObject:
         return self._get_object("/api/v1/overview", cache_ttl=3.0)
@@ -236,13 +308,24 @@ class ApiClient:
     def run_comparison(self, run_id: str) -> JsonObject:
         return self._get_object(f"/api/v1/runs/{run_id}/comparison", cache_ttl=2.0)
 
-    def export_run(self, run_id: str, *, export_format: str = "json") -> bytes:
-        if export_format not in {"json", "csv"}:
-            raise ValueError("run export format must be json or csv")
+    def export_run(
+        self,
+        run_id: str,
+        *,
+        export_format: str = "json",
+        disclosure_profile: str = "content_redacted",
+    ) -> bytes:
+        if export_format not in {"json", "csv", "package"}:
+            raise ValueError("run export format must be json, csv, or package")
+        if disclosure_profile not in {"content_redacted", "full_evidence"}:
+            raise ValueError("run export disclosure profile is invalid")
         response = self._request_response(
             "GET",
             f"/api/v1/runs/{run_id}/export",
-            params={"format": export_format},
+            params={
+                "format": export_format,
+                "disclosure_profile": disclosure_profile,
+            },
         )
         return response.content
 
@@ -387,7 +470,7 @@ class ApiClient:
                     json=json_payload,
                     data=data,
                     files=files,
-                    headers=headers,
+                    headers=self._request_headers(headers),
                 )
             except httpx.TimeoutException:
                 last_error = ApiError(
@@ -404,6 +487,8 @@ class ApiClient:
             else:
                 if response.is_success:
                     return response
+                if response.status_code == 401:
+                    self._notify_unauthorized()
                 last_error = _error_from_response(response)
                 if response.status_code not in _RETRYABLE_STATUS_CODES or not read_only:
                     raise last_error
@@ -415,13 +500,57 @@ class ApiClient:
             raise ApiError("The API request failed")
         raise last_error
 
-    @staticmethod
     def _cache_key(
+        self,
         path: str,
         params: Mapping[str, QueryValue] | None,
-    ) -> tuple[str, tuple[tuple[str, str], ...]]:
+    ) -> tuple[str, str | None, str, tuple[tuple[str, str], ...]]:
         query = httpx.QueryParams(params or {}).multi_items()
-        return path, tuple(sorted(query))
+        return (
+            self.identity_fingerprint,
+            self.workspace_id,
+            path,
+            tuple(sorted(query)),
+        )
+
+    def _request_headers(self, headers: Mapping[str, str] | None) -> dict[str, str]:
+        request_headers = dict(headers or {})
+        protected = {key.casefold() for key in request_headers}
+        if "authorization" in protected or "x-evalforge-workspace-id" in protected:
+            raise ValueError("Identity and workspace headers are managed by ApiClient")
+
+        if self._access_token_provider is not None:
+            try:
+                token = _validated_header_value(
+                    self._access_token_provider(),
+                    name="access token",
+                    maximum=16_384,
+                )
+            except Exception as error:
+                self._notify_unauthorized()
+                raise ApiError(
+                    "Your sign-in session is no longer available",
+                    status_code=401,
+                    code="reauthentication_required",
+                ) from error
+            if token is None:
+                self._notify_unauthorized()
+                raise ApiError(
+                    "Your sign-in session is no longer available",
+                    status_code=401,
+                    code="reauthentication_required",
+                )
+            request_headers["Authorization"] = f"Bearer {token}"
+        if self.workspace_id is not None:
+            request_headers["X-EvalForge-Workspace-ID"] = self.workspace_id
+        return request_headers
+
+    def _notify_unauthorized(self) -> None:
+        if self._unauthorized_notified:
+            return
+        self._unauthorized_notified = True
+        if self._on_unauthorized is not None:
+            self._on_unauthorized()
 
 
 def collection_items(payload: Any) -> list[JsonObject]:
@@ -515,17 +644,72 @@ def _error_from_response(response: httpx.Response) -> ApiError:
         detail_text = json.dumps(public_payload(detail), ensure_ascii=False, sort_keys=True)
     else:
         detail_text = str(detail)
+    detail_text = _redact_request_credentials(response, detail_text)
     detail_text = detail_text.strip()[:600] or "The API request failed"
     code = error_payload.get("code")
+    code_text = _redact_request_credentials(response, str(code))[:128] if code is not None else None
+    request_id = _request_id(response, error_payload)
+    if request_id is not None:
+        request_id = _redact_request_credentials(response, request_id)
     retryable = error_payload.get("retryable")
     return ApiError(
         detail_text,
         status_code=response.status_code,
-        request_id=_request_id(response, error_payload),
-        code=str(code)[:128] if code is not None else None,
+        request_id=request_id,
+        code=code_text,
         retryable=(
             retryable
             if isinstance(retryable, bool)
             else response.status_code in _RETRYABLE_STATUS_CODES
         ),
     )
+
+
+def _redact_request_credentials(response: httpx.Response, value: str) -> str:
+    try:
+        authorization = response.request.headers.get("authorization", "")
+    except RuntimeError:
+        return value
+    scheme, separator, token = authorization.partition(" ")
+    if separator and scheme.casefold() == "bearer" and token:
+        if token in value:
+            return value.replace(token, "[credential]")
+        if len(token) >= 16 and (token[:16] in value or token[-16:] in value):
+            return "[credential]"
+    return value
+
+
+def _validated_header_value(
+    value: str | None,
+    *,
+    name: str,
+    maximum: int,
+) -> str | None:
+    if value is None:
+        return None
+    if (
+        not value
+        or len(value) > maximum
+        or value != value.strip()
+        or any(ord(character) < 33 or ord(character) > 126 for character in value)
+    ):
+        raise ValueError(f"{name} has an invalid format")
+    return value
+
+
+def _validated_fingerprint(value: str) -> str:
+    candidate = value.strip()
+    if (
+        not candidate
+        or len(candidate) > 128
+        or any(
+            not (character.isascii() and (character.isalnum() or character in {"-", "_", ":"}))
+            for character in candidate
+        )
+    ):
+        raise ValueError("identity_fingerprint has an invalid format")
+    return candidate
+
+
+def _token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()

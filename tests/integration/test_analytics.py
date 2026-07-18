@@ -15,19 +15,21 @@ from evalforge.models import (
     RunStatus,
     canonical_json_hash,
 )
+from evalforge.security.permissions import WorkspaceContext
 
 
 @pytest.mark.integration
 def test_overview_reports_unavailable_cost_when_no_result_has_pricing(
     session: Session,
     sample_result: EvaluationResult,
+    workspace_context: WorkspaceContext,
 ) -> None:
     sample_result.estimated_cost_micro_usd = None
     sample_result.cost_source = "pricing_unavailable"
     session.add(sample_result)
     session.commit()
 
-    totals = build_overview(session)["totals"]
+    totals = build_overview(session, workspace_context.workspace_id)["totals"]
 
     assert totals["known_cost_micro_usd"] is None
     assert totals["known_cost_items"] == 0
@@ -37,13 +39,14 @@ def test_overview_reports_unavailable_cost_when_no_result_has_pricing(
 def test_overview_preserves_known_zero_cost_with_positive_pricing_coverage(
     session: Session,
     sample_result: EvaluationResult,
+    workspace_context: WorkspaceContext,
 ) -> None:
     sample_result.estimated_cost_micro_usd = 0
     sample_result.cost_source = "synthetic"
     session.add(sample_result)
     session.commit()
 
-    totals = build_overview(session)["totals"]
+    totals = build_overview(session, workspace_context.workspace_id)["totals"]
 
     assert totals["known_cost_micro_usd"] == 0
     assert totals["known_cost_items"] == 1
@@ -53,6 +56,7 @@ def test_overview_preserves_known_zero_cost_with_positive_pricing_coverage(
 def test_comparison_includes_labeled_case_aligned_deltas(
     session: Session,
     sample_result: EvaluationResult,
+    workspace_context: WorkspaceContext,
 ) -> None:
     sample_result.aggregate_score = 0.4
     sample_result.aggregate_passed = False
@@ -68,7 +72,7 @@ def test_comparison_includes_labeled_case_aligned_deltas(
     challenger = _add_challenger_result(session, sample_result, score=0.7)
     session.commit()
 
-    comparison = build_run_comparison(session, sample_result.run_id)
+    comparison = build_run_comparison(session, workspace_context.workspace_id, sample_result.run_id)
 
     assert comparison["paired_comparisons"] == [
         {
@@ -117,6 +121,7 @@ def _add_challenger_result(
         "pricing_source": "deterministic",
     }
     model = ModelProfile(
+        workspace_id=baseline.workspace_id,
         name="Offline challenger",
         description=None,
         version=1,
@@ -135,6 +140,7 @@ def _add_challenger_result(
     session.flush()
 
     candidate = RunCandidate(
+        workspace_id=baseline.workspace_id,
         run=baseline.run,
         prompt_template=baseline.candidate.prompt_template,
         model_profile=model,
@@ -160,6 +166,7 @@ def _add_challenger_result(
     session.flush()
 
     result = EvaluationResult(
+        workspace_id=baseline.workspace_id,
         run=baseline.run,
         candidate=candidate,
         test_case=baseline.test_case,

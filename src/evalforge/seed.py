@@ -19,6 +19,7 @@ from evalforge.schemas import (
     PromptTemplateCreate,
     TestCaseCreate,
 )
+from evalforge.security.permissions import WorkspaceContext
 
 DEMO_DATASET_FILES = ("customer-support.json", "rag-groundedness.json")
 
@@ -72,11 +73,18 @@ def _read_dataset(filename: str, *, example_root: Path | None) -> DatasetCreate:
     )
 
 
-def seed_demo(session: Session, *, example_root: Path | None = None) -> dict[str, int]:
+def seed_demo(
+    session: Session,
+    context: WorkspaceContext,
+    *,
+    example_root: Path | None = None,
+) -> dict[str, int]:
     """Create stable demo resources once and return total demo resource counts."""
-    repositories = Repositories(session)
+    repositories = Repositories(session, context)
 
-    existing_dataset_names = set(session.scalars(select(Dataset.name)))
+    existing_dataset_names = set(
+        session.scalars(select(Dataset.name).where(Dataset.workspace_id == context.workspace_id))
+    )
     for filename in DEMO_DATASET_FILES:
         dataset_data = _read_dataset(filename, example_root=example_root)
         if dataset_data.name not in existing_dataset_names:
@@ -106,7 +114,11 @@ def seed_demo(session: Session, *, example_root: Path | None = None) -> dict[str
     )
     existing_prompt_keys = {
         (name, version)
-        for name, version in session.execute(select(PromptTemplate.name, PromptTemplate.version))
+        for name, version in session.execute(
+            select(PromptTemplate.name, PromptTemplate.version).where(
+                PromptTemplate.workspace_id == context.workspace_id
+            )
+        )
     }
     for prompt_data in prompt_specs:
         if (prompt_data.name, prompt_data.version) not in existing_prompt_keys:
@@ -165,7 +177,11 @@ def seed_demo(session: Session, *, example_root: Path | None = None) -> dict[str
     )
     existing_model_keys = {
         (name, version)
-        for name, version in session.execute(select(ModelProfile.name, ModelProfile.version))
+        for name, version in session.execute(
+            select(ModelProfile.name, ModelProfile.version).where(
+                ModelProfile.workspace_id == context.workspace_id
+            )
+        )
     }
     for model_data in model_specs:
         if (model_data.name, model_data.version) not in existing_model_keys:
@@ -173,39 +189,57 @@ def seed_demo(session: Session, *, example_root: Path | None = None) -> dict[str
             existing_model_keys.add((model_data.name, model_data.version))
 
     session.flush()
-    return demo_counts(session)
+    return demo_counts(session, context)
 
 
-def demo_counts(session: Session) -> dict[str, int]:
+def demo_counts(session: Session, context: WorkspaceContext) -> dict[str, int]:
     """Return safe aggregate counts for idempotency checks and CLI output."""
     dataset_names = {"Customer support quality", "Grounded product Q&A"}
     prompt_names = {"Grounded answer", "Concise grounded answer"}
     model_names = {"Demo Reliable", "Demo Fast", "Demo Risky"}
     return {
         "datasets": len(
-            list(session.scalars(select(Dataset.id).where(Dataset.name.in_(dataset_names))))
+            list(
+                session.scalars(
+                    select(Dataset.id).where(
+                        Dataset.workspace_id == context.workspace_id,
+                        Dataset.name.in_(dataset_names),
+                    )
+                )
+            )
         ),
         "prompts": len(
             list(
                 session.scalars(
-                    select(PromptTemplate.id).where(PromptTemplate.name.in_(prompt_names))
+                    select(PromptTemplate.id).where(
+                        PromptTemplate.workspace_id == context.workspace_id,
+                        PromptTemplate.name.in_(prompt_names),
+                    )
                 )
             )
         ),
         "models": len(
-            list(session.scalars(select(ModelProfile.id).where(ModelProfile.name.in_(model_names))))
+            list(
+                session.scalars(
+                    select(ModelProfile.id).where(
+                        ModelProfile.workspace_id == context.workspace_id,
+                        ModelProfile.name.in_(model_names),
+                    )
+                )
+            )
         ),
     }
 
 
-def exportable_seed_manifest(session: Session) -> dict[str, Any]:
+def exportable_seed_manifest(session: Session, context: WorkspaceContext) -> dict[str, Any]:
     """Return IDs and names without prompt or case content."""
     return {
         "datasets": [
             {"id": item.id, "name": item.name, "version": item.version}
             for item in session.scalars(
                 select(Dataset).where(
-                    Dataset.name.in_({"Customer support quality", "Grounded product Q&A"})
+                    Dataset.workspace_id == context.workspace_id,
+                    Dataset.name.in_({"Customer support quality", "Grounded product Q&A"}),
                 )
             )
         ],
@@ -213,7 +247,8 @@ def exportable_seed_manifest(session: Session) -> dict[str, Any]:
             {"id": item.id, "name": item.name, "version": item.version}
             for item in session.scalars(
                 select(PromptTemplate).where(
-                    PromptTemplate.name.in_({"Grounded answer", "Concise grounded answer"})
+                    PromptTemplate.workspace_id == context.workspace_id,
+                    PromptTemplate.name.in_({"Grounded answer", "Concise grounded answer"}),
                 )
             )
         ],
@@ -221,7 +256,8 @@ def exportable_seed_manifest(session: Session) -> dict[str, Any]:
             {"id": item.id, "name": item.name, "version": item.version}
             for item in session.scalars(
                 select(ModelProfile).where(
-                    ModelProfile.name.in_({"Demo Reliable", "Demo Fast", "Demo Risky"})
+                    ModelProfile.workspace_id == context.workspace_id,
+                    ModelProfile.name.in_({"Demo Reliable", "Demo Fast", "Demo Risky"}),
                 )
             )
         ],

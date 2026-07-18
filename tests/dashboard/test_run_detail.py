@@ -259,6 +259,30 @@ def test_render_shows_directional_scorecard(
     assert scorecard[1]["Direction"] == "Lower is better"
     assert scorecard[1]["Target"] == "at most 0.200"
 
+    export_selector = next(
+        element for element in app.selectbox if element.label == "Export contents"
+    )
+    prepare_labels = {"Prepare evidence package", "Prepare JSON", "Prepare CSV"}
+    prepare_buttons = [button for button in app.button if button.label in prepare_labels]
+    assert len(prepare_buttons) == 3
+    assert all(not button.disabled for button in prepare_buttons)
+
+    export_selector.select("full_evidence").run()
+
+    prepare_buttons = [button for button in app.button if button.label in prepare_labels]
+    assert len(prepare_buttons) == 3
+    assert all(button.disabled for button in prepare_buttons)
+    confirmation = next(
+        element
+        for element in app.checkbox
+        if element.label == "I understand that these exports include stored evaluation content."
+    )
+    confirmation.check().run()
+
+    prepare_buttons = [button for button in app.button if button.label in prepare_labels]
+    assert len(prepare_buttons) == 3
+    assert all(not button.disabled for button in prepare_buttons)
+
 
 def _fake_transport(routes: dict[str, Any]):
     def request_response(

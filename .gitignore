@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+.streamlit/secrets.toml
+.streamlit/auth.toml
 .venv/
 __pycache__/
 *.py[cod]

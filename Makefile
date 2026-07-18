@@ -55,7 +55,7 @@ api:
 	uv run uvicorn evalforge.api.app:app --host 127.0.0.1 --port 8000 --workers 1
 
 ui:
-	uv run streamlit run src/evalforge/dashboard/app.py --server.address 127.0.0.1 --server.port 8501
+	uv run streamlit run src/evalforge/streamlit_app.py --server.address 127.0.0.1 --server.port 8501
 
 compose-up:
 	docker compose up --build -d
