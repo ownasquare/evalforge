@@ -7,6 +7,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+### Added
+
+- Offline JSON/CSV human-label ingestion and deterministic, idempotent calibration reports through
+  `evalforge calibrate`.
+
 ### Changed
 
 - No changes yet.

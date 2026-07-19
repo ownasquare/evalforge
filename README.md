@@ -38,6 +38,18 @@ For an immutable source snapshot and verified package artifacts, use the
 Everything else supports that loop. Provider setup, shared-workspace controls, and operational
 details stay out of the way until you need them.
 
+### Optional: check a threshold against human labels
+
+If reviewers have labeled a calibration set, create a private offline report without starting the
+dashboard or contacting a provider:
+
+```bash
+uv run evalforge calibrate examples/calibration-labels.json --threshold 0.7 --output-dir ./private-calibration
+```
+
+See [Evaluation methodology](docs/evaluation-methodology.md#offline-threshold-calibration) for the
+input contract, report meaning, and proof boundaries.
+
 ## What EvalForge measures
 
 | Signal | What it helps answer |

@@ -32,6 +32,12 @@ from evalforge.demo import (
     run_foreground,
     ui_command,
 )
+from evalforge.evaluation.calibration_io import (
+    CalibrationInputError,
+    LocalCalibrationReportSink,
+    build_calibration_report,
+    load_calibration_manifest,
+)
 from evalforge.exports import DisclosureProfile, LocalFileSink, build_export_package
 from evalforge.models import AuditEvent, RecordStatus, User, Workspace, WorkspaceMembership
 from evalforge.repositories import EvaluationRunRepository, NotFoundError
@@ -295,6 +301,79 @@ def doctor() -> None:
     typer.echo(json.dumps(payload, indent=2))
     if not database_ready:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def calibrate(
+    labels_file: Annotated[
+        Path,
+        typer.Argument(help="Versioned EvalForge JSON or CSV labels"),
+    ],
+    selected_threshold: Annotated[
+        float,
+        typer.Option(
+            "--threshold",
+            min=0.0,
+            max=1.0,
+            help="Metric threshold to review",
+        ),
+    ],
+    output_directory: Annotated[
+        Path,
+        typer.Option(
+            "--output-dir",
+            "-o",
+            help="Private report destination directory",
+        ),
+    ],
+) -> None:
+    """Create deterministic offline calibration evidence without contacting a provider.
+
+    This permanently offline workflow reads only the supplied labels file and writes one
+    local report. It does not load settings or credentials, open a database, or contact a
+    model provider.
+    """
+
+    try:
+        manifest = load_calibration_manifest(labels_file)
+        package = build_calibration_report(
+            manifest,
+            selected_threshold=selected_threshold,
+        )
+        receipt = LocalCalibrationReportSink(output_directory).export(package)
+    except CalibrationInputError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    except (OSError, ValueError):
+        raise typer.BadParameter("The offline calibration report could not be created.") from None
+
+    payload = package.payload
+    typer.echo(
+        json.dumps(
+            {
+                "status": receipt.status,
+                "schema_version": payload["schema_version"],
+                "dataset_id": payload["dataset"]["id"],
+                "dataset_version": payload["dataset"]["version"],
+                "metric_name": payload["metric"]["name"],
+                "metric_version": payload["metric"]["version"],
+                "sample_size": payload["sample_size"],
+                "human_pass_count": payload["human_pass_count"],
+                "human_fail_count": payload["human_fail_count"],
+                "selected_threshold": payload["selected_threshold"],
+                "direction": payload["metric"]["direction"],
+                "precision": payload["precision"],
+                "recall": payload["recall"],
+                "f1": payload["f1"],
+                "payload_sha256": receipt.payload_sha256,
+                "label_manifest_sha256": receipt.label_manifest_sha256,
+                "calibration_set_sha256": payload["calibration_set_sha256"],
+                "production_validated": False,
+                "location": receipt.location,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
 
 
 @app.command("workspace-create")

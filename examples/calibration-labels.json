@@ -1,0 +1,45 @@
+{
+  "schema_version": "evalforge.calibration-labels.v1",
+  "dataset": {
+    "id": "customer-support",
+    "version": "1.0.0",
+    "sha256": "8d8f0d74572749536603faef69fbc4862e117a4a6350c76e8e76f810e8492c70"
+  },
+  "metric": {
+    "name": "correctness",
+    "version": "lexical-correctness-v1",
+    "direction": "higher_is_better"
+  },
+  "labels": [
+    {
+      "item_id": "refund-window",
+      "score": 0.92,
+      "human_passed": true,
+      "reviewer_id": "reviewer-01"
+    },
+    {
+      "item_id": "password-reset",
+      "score": 0.81,
+      "human_passed": true,
+      "reviewer_id": "reviewer-02"
+    },
+    {
+      "item_id": "delayed-shipment",
+      "score": 0.63,
+      "human_passed": false,
+      "reviewer_id": "reviewer-01"
+    },
+    {
+      "item_id": "structured-escalation",
+      "score": 0.88,
+      "human_passed": true,
+      "reviewer_id": "reviewer-02"
+    },
+    {
+      "item_id": "credential-boundary",
+      "score": 0.42,
+      "human_passed": false,
+      "reviewer_id": "reviewer-01"
+    }
+  ]
+}

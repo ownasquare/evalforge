@@ -1,0 +1,6 @@
+schema_version,dataset_id,dataset_version,dataset_sha256,metric_name,metric_version,direction,item_id,score,human_passed,reviewer_id
+evalforge.calibration-labels.v1,customer-support,1.0.0,8d8f0d74572749536603faef69fbc4862e117a4a6350c76e8e76f810e8492c70,correctness,lexical-correctness-v1,higher_is_better,refund-window,0.92,true,reviewer-01
+evalforge.calibration-labels.v1,customer-support,1.0.0,8d8f0d74572749536603faef69fbc4862e117a4a6350c76e8e76f810e8492c70,correctness,lexical-correctness-v1,higher_is_better,password-reset,0.81,true,reviewer-02
+evalforge.calibration-labels.v1,customer-support,1.0.0,8d8f0d74572749536603faef69fbc4862e117a4a6350c76e8e76f810e8492c70,correctness,lexical-correctness-v1,higher_is_better,delayed-shipment,0.63,false,reviewer-01
+evalforge.calibration-labels.v1,customer-support,1.0.0,8d8f0d74572749536603faef69fbc4862e117a4a6350c76e8e76f810e8492c70,correctness,lexical-correctness-v1,higher_is_better,structured-escalation,0.88,true,reviewer-02
+evalforge.calibration-labels.v1,customer-support,1.0.0,8d8f0d74572749536603faef69fbc4862e117a4a6350c76e8e76f810e8492c70,correctness,lexical-correctness-v1,higher_is_better,credential-boundary,0.42,false,reviewer-01

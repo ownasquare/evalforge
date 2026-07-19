@@ -160,6 +160,28 @@ The neutral `src/evalforge/streamlit_app.py` entry point keeps Streamlit's route
 separate from the implementation `dashboard/pages/` package. Direct cold bookmarks to Home,
 Results, Compare, New evaluation, Benchmarks, Models, and Settings are covered by browser tests.
 
+## Offline calibration reports
+
+Human-label calibration is an optional CLI workflow, separate from the dashboard and provider
+configuration:
+
+```bash
+uv run evalforge calibrate examples/calibration-labels.json --threshold 0.7 \
+  --output-dir ./private-calibration
+```
+
+The command validates the complete input before writing, names the report from its canonical
+SHA-256, creates it with private permissions, and returns `already_exists` when an identical report
+is already present. A conflicting, modified, or symbolic-link destination fails closed. Keep the
+output directory private and use opaque reviewer IDs such as `reviewer-01`; do not place reviewer
+names, email addresses, credentials, or source content in those identifiers.
+
+This workflow is offline only. It does not read provider settings, contact a provider, choose a
+threshold automatically, measure reviewer agreement, or validate a production deployment. The
+report records those boundaries explicitly. See
+[Evaluation methodology](evaluation-methodology.md#offline-threshold-calibration) for the schema and
+interpretation guidance.
+
 ## Real-provider checklist
 
 ### Connect your first provider locally

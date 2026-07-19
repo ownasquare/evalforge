@@ -66,6 +66,20 @@ the formats documented in the [API contract](api.md). Good cases usually include
 
 Start with a small set of representative cases. Add edge cases and known regressions as you learn.
 
+## Optional: check a threshold against human labels
+
+After reviewers have labeled a calibration set, generate a private offline report from either
+copyable example format:
+
+```bash
+uv run evalforge calibrate examples/calibration-labels.json --threshold 0.7 --output-dir ./private-calibration
+```
+
+The same command accepts `examples/calibration-labels.csv`. Equivalent JSON and CSV inputs produce
+the same manifest identity. The command makes no provider call and does not select or approve a
+threshold for you. See [Evaluation methodology](evaluation-methodology.md#offline-threshold-calibration)
+before using the report as release evidence.
+
 ## Stop and resume
 
 Press `Ctrl+C` in the demo terminal to stop both services. Your local SQLite data remains under the
