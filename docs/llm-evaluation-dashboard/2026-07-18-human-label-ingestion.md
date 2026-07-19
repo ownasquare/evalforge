@@ -29,12 +29,28 @@ workflow.
 
 ## Local evidence
 
-The local parser, report, adoption, and project-contract slice passed:
+The complete local release gate passed:
 
-- `uv run --all-groups pytest -q tests/unit/test_calibration_io.py tests/contract/test_public_project_contract.py tests/contract/test_project_contract.py` — 31 passed
-- `uv run --all-groups ruff check tests/contract/test_public_project_contract.py`
-- `uv run --all-groups ruff format --check tests/contract/test_public_project_contract.py`
-- `git diff --check`
+- full deterministic suite — 389 passed, 3 PostgreSQL skips, and 14 deliberately deselected live
+  or E2E tests;
+- branch-aware coverage — 84.21%, above the 80% project requirement;
+- focused release and public-project contracts — 12 passed;
+- Ruff, format, mypy, Bandit, dependency audit, and `git diff --check` — passed;
+- JSON and CSV smoke run — identical report SHA-256, with the second write returning
+  `already_exists`; and
+- persisted report — canonical SHA-256 verified and file mode `0600`.
+
+The opt-in paid-provider contract was selected separately and skipped at its first authorization
+gate because `EVALFORGE_RUN_LIVE_CALIBRATION=1` was not set.
+
+## Pull-request evidence
+
+- implementation commit:
+  `53d345bd79f6a678175f3a725cfa1854795d249b`;
+- protected pull request: [#6](https://github.com/ownasquare/evalforge/pull/6); and
+- hosted CI: [run 29668555040](https://github.com/ownasquare/evalforge/actions/runs/29668555040) —
+  quality, PostgreSQL 3.11, PostgreSQL 3.12, API container, dashboard container, and browser E2E all
+  passed.
 
 The copyable labels are fixture-backed local evidence. They are not records of a real human review,
 provider execution, hosted deployment, or production behavior.
@@ -54,5 +70,5 @@ actual calibration decision still requires representative sampling, real human r
 governance, and a documented release policy. Paid-provider comparison and production acceptance
 remain separate, explicitly authorized work.
 
-This record contains local evidence only. Exact pull request, protected-main SHA, and hosted CI
-evidence can be appended by the publishing owner after merge.
+The protected-main SHA and final main-branch verification belong in the post-merge handoff because
+GitHub assigns the squash-merge commit only after the protected pull request is merged.
