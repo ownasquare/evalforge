@@ -115,10 +115,15 @@ jobs:
           fi
 
           gh release create "${GITHUB_REF_NAME}" \
-            dist/*.whl \
-            dist/*.tar.gz \
-            dist/SHA256SUMS \
             --verify-tag \
             --title "EvalForge ${GITHUB_REF_NAME}" \
             "${notes_arguments[@]}" \
-            "${release_arguments[@]}"
+            "${release_arguments[@]}" \
+            --draft
+
+          gh release upload "${GITHUB_REF_NAME}" \
+            dist/*.whl \
+            dist/*.tar.gz \
+            dist/SHA256SUMS
+
+          gh release edit "${GITHUB_REF_NAME}" --draft=false
