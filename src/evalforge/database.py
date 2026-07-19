@@ -20,7 +20,7 @@ class Base(DeclarativeBase):
 
 
 SessionFactory = sessionmaker[Session]
-EXPECTED_SCHEMA_REVISION = "0004_durable_execution_leases"
+EXPECTED_SCHEMA_REVISION = "0005_calibration_reports"
 REQUIRED_SCHEMA_COLUMNS = {
     "evaluation_runs": {
         "preflight_snapshot",

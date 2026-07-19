@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -253,6 +254,27 @@ def _create_matrix(
     }
 
 
+def _wait_for_terminal_run(
+    api: SharedApi,
+    run_id: str,
+    *,
+    actor: str,
+    workspace_id: str = WORKSPACE_ALPHA_ID,
+) -> dict[str, object]:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        response = api.client.get(
+            f"/api/v1/runs/{run_id}",
+            headers=api.headers(actor, workspace_id),
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        if payload["status"] in {"completed", "completed_with_errors", "failed"}:
+            return payload
+        time.sleep(0.02)
+    raise AssertionError("evaluation run did not reach a terminal state")
+
+
 @pytest.mark.integration
 def test_local_mode_keeps_headerless_api_compatibility(local_api_client: TestClient) -> None:
     created = local_api_client.post(
@@ -448,6 +470,72 @@ def test_workspace_roles_gate_reads_and_mutations(shared_api: SharedApi) -> None
 
 
 @pytest.mark.integration
+def test_calibration_download_and_history_are_viewer_readable_but_import_requires_editor(
+    shared_api: SharedApi,
+) -> None:
+    matrix = _create_matrix(
+        shared_api,
+        actor="owner",
+        workspace_id=WORKSPACE_ALPHA_ID,
+        prefix="Calibration roles",
+        idempotency_key="calibration-roles-run",
+    )
+    run = _wait_for_terminal_run(shared_api, matrix["run_id"], actor="owner")
+    assert run["status"] == "completed"
+    candidates = run["candidates"]
+    assert isinstance(candidates, list) and candidates
+    candidate_id = candidates[0]["id"]
+
+    template = shared_api.client.get(
+        f"/api/v1/runs/{matrix['run_id']}/calibrations/template",
+        headers=shared_api.headers("viewer"),
+        params={
+            "candidate_id": candidate_id,
+            "metric_name": "correctness",
+            "format": "json",
+        },
+    )
+    assert template.status_code == 200, template.text
+    manifest = template.json()
+    for row in manifest["labels"]:
+        row["human_passed"] = True
+        row["reviewer_id"] = "reviewer-role-proof"
+    form = {
+        "candidate_id": candidate_id,
+        "metric_name": "correctness",
+        "selected_threshold": "0.7",
+    }
+    upload = json.dumps(manifest, separators=(",", ":"))
+    import_params = {**form, "format": "json"}
+
+    denied = shared_api.client.post(
+        f"/api/v1/runs/{matrix['run_id']}/calibrations",
+        headers={**shared_api.headers("viewer"), "Content-Type": "application/json"},
+        params=import_params,
+        content=upload,
+    )
+    _assert_error(denied, 403, "forbidden")
+    assert "reviewer-role-proof" not in denied.text
+
+    imported = shared_api.client.post(
+        f"/api/v1/runs/{matrix['run_id']}/calibrations",
+        headers={**shared_api.headers("editor"), "Content-Type": "application/json"},
+        params=import_params,
+        content=upload,
+    )
+    assert imported.status_code == 201, imported.text
+    assert imported.json()["status"] == "created"
+    assert "reviewer-role-proof" not in imported.text
+
+    history = shared_api.client.get(
+        f"/api/v1/runs/{matrix['run_id']}/calibrations",
+        headers=shared_api.headers("viewer"),
+    )
+    assert history.status_code == 200, history.text
+    assert history.json()["total"] == 1
+
+
+@pytest.mark.integration
 def test_suspended_membership_is_denied_without_object_disclosure(shared_api: SharedApi) -> None:
     assert (
         shared_api.client.get(
@@ -504,6 +592,23 @@ def test_cors_preflight_allows_identity_workspace_and_idempotency_headers(
         "x-request-id",
     }.issubset(allowed)
 
+    actual = shared_api.client.get(
+        "/health/live",
+        headers={"Origin": "http://127.0.0.1:8501"},
+    )
+    assert actual.status_code == 200, actual.text
+    exposed = {
+        value.strip().casefold()
+        for value in actual.headers["access-control-expose-headers"].split(",")
+    }
+    assert {
+        "content-disposition",
+        "location",
+        "x-evalforge-payload-sha256",
+        "x-evalforge-sample-size",
+        "x-request-id",
+    } == exposed
+
 
 @pytest.mark.integration
 def test_cross_tenant_ids_and_idempotency_do_not_cross_boundaries(shared_api: SharedApi) -> None:
@@ -539,6 +644,50 @@ def test_cross_tenant_ids_and_idempotency_do_not_cross_boundaries(shared_api: Sh
     assert replay.status_code == 202, replay.text
     assert replay.json()["id"] == alpha["run_id"]
 
+    alpha_run = _wait_for_terminal_run(shared_api, alpha["run_id"], actor="owner")
+    beta_run = _wait_for_terminal_run(
+        shared_api,
+        beta["run_id"],
+        actor="foreign_owner",
+        workspace_id=WORKSPACE_BETA_ID,
+    )
+    alpha_candidates = alpha_run["candidates"]
+    beta_candidates = beta_run["candidates"]
+    assert isinstance(alpha_candidates, list) and alpha_candidates
+    assert isinstance(beta_candidates, list) and beta_candidates
+    alpha_candidate_id = alpha_candidates[0]["id"]
+    beta_candidate_id = beta_candidates[0]["id"]
+    alpha_template = shared_api.client.get(
+        f"/api/v1/runs/{alpha['run_id']}/calibrations/template",
+        headers=shared_api.headers("owner", WORKSPACE_ALPHA_ID),
+        params={
+            "candidate_id": alpha_candidate_id,
+            "metric_name": "correctness",
+            "format": "json",
+        },
+    )
+    assert alpha_template.status_code == 200, alpha_template.text
+    alpha_manifest = alpha_template.json()
+    for row in alpha_manifest["labels"]:
+        row["human_passed"] = True
+        row["reviewer_id"] = "tenant-private-reviewer"
+    alpha_report = shared_api.client.post(
+        f"/api/v1/runs/{alpha['run_id']}/calibrations",
+        headers={
+            **shared_api.headers("owner", WORKSPACE_ALPHA_ID),
+            "Content-Type": "application/json",
+        },
+        params={
+            "candidate_id": alpha_candidate_id,
+            "metric_name": "correctness",
+            "selected_threshold": "0.7",
+            "format": "json",
+        },
+        content=json.dumps(alpha_manifest, separators=(",", ":")),
+    )
+    assert alpha_report.status_code == 201, alpha_report.text
+    alpha_report_id = alpha_report.json()["report"]["id"]
+
     beta_headers = shared_api.headers("foreign_owner", WORKSPACE_BETA_ID)
     for path in (
         f"/api/v1/datasets/{alpha['dataset_id']}",
@@ -563,6 +712,33 @@ def test_cross_tenant_ids_and_idempotency_do_not_cross_boundaries(shared_api: Sh
     )
     _assert_error(cross_tenant_cancel, 404, "not_found")
     assert alpha["run_id"] not in cross_tenant_cancel.text
+
+    foreign_run_history = shared_api.client.get(
+        f"/api/v1/runs/{alpha['run_id']}/calibrations",
+        headers=beta_headers,
+    )
+    _assert_error(foreign_run_history, 404, "not_found")
+    assert alpha["run_id"] not in foreign_run_history.text
+
+    foreign_candidate = shared_api.client.get(
+        f"/api/v1/runs/{alpha['run_id']}/calibrations/template",
+        headers=shared_api.headers("owner", WORKSPACE_ALPHA_ID),
+        params={
+            "candidate_id": beta_candidate_id,
+            "metric_name": "correctness",
+            "format": "json",
+        },
+    )
+    _assert_error(foreign_candidate, 404, "not_found")
+    assert str(beta_candidate_id) not in foreign_candidate.text
+
+    foreign_report = shared_api.client.get(
+        f"/api/v1/runs/{alpha['run_id']}/calibrations/{alpha_report_id}",
+        headers=beta_headers,
+    )
+    _assert_error(foreign_report, 404, "not_found")
+    assert alpha_report_id not in foreign_report.text
+    assert "tenant-private-reviewer" not in foreign_report.text
 
 
 @pytest.mark.integration

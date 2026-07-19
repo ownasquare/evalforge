@@ -42,6 +42,12 @@ _CSV_COLUMNS: Final[tuple[str, ...]] = (
     "reviewer_id",
 )
 _CSV_METADATA_COLUMNS: Final[tuple[str, ...]] = _CSV_COLUMNS[:7]
+_CSV_TEMPLATE_COLUMNS: Final[tuple[str, ...]] = (
+    *_CSV_METADATA_COLUMNS,
+    "case_position",
+    "case_external_id",
+    *_CSV_COLUMNS[7:],
+)
 
 
 class CalibrationInputError(ValueError):
@@ -99,6 +105,8 @@ class HumanCalibrationRow(_StrictCalibrationModel):
     """One metric score and one human decision from an opaque reviewer."""
 
     item_id: str
+    case_position: int | None = Field(default=None, ge=0)
+    case_external_id: str | None = Field(default=None, min_length=1, max_length=200)
     score: float
     human_passed: bool
     reviewer_id: str
@@ -125,7 +133,7 @@ class HumanCalibrationRow(_StrictCalibrationModel):
         normalized = float(value)
         if not math.isfinite(normalized) or not 0.0 <= normalized <= 1.0:
             raise ValueError("score must be a finite number between 0 and 1")
-        return normalized
+        return 0.0 if normalized == 0.0 else normalized
 
     @field_validator("human_passed", mode="before")
     @classmethod
@@ -133,6 +141,25 @@ class HumanCalibrationRow(_StrictCalibrationModel):
         if not isinstance(value, bool):
             raise ValueError("human_passed must be a boolean")
         return value
+
+
+class CalibrationTemplateRow(_StrictCalibrationModel):
+    """One server-derived result identity and score awaiting private review."""
+
+    item_id: str
+    case_position: int | None = Field(default=None, ge=0)
+    case_external_id: str | None = Field(default=None, min_length=1, max_length=200)
+    score: float
+
+    @field_validator("item_id", mode="before")
+    @classmethod
+    def validate_item_id(cls, value: object) -> str:
+        return _safe_identifier(value)
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def validate_score(cls, value: object) -> float:
+        return HumanCalibrationRow.validate_score(value)
 
 
 class CalibrationLabelManifest(_StrictCalibrationModel):
@@ -196,13 +223,109 @@ def load_calibration_manifest(path: Path) -> CalibrationLabelManifest:
     if source.suffix not in {".json", ".csv"}:
         raise CalibrationInputError("calibration labels must be a JSON or CSV file")
     raw = _bounded_file_bytes(source)
+    return load_calibration_manifest_bytes(raw, filename=source.name)
+
+
+def load_calibration_manifest_bytes(
+    payload: bytes,
+    *,
+    filename: str,
+) -> CalibrationLabelManifest:
+    """Parse one bounded upload without writing reviewer data to disk."""
+
+    if not isinstance(payload, bytes):
+        raise TypeError("payload must be bytes")
+    if not isinstance(filename, str):
+        raise TypeError("filename must be a string")
+    suffix = Path(filename).suffix
+    if suffix not in {".json", ".csv"}:
+        raise CalibrationInputError("calibration labels must be a JSON or CSV file")
+    if len(payload) > MAX_CALIBRATION_FILE_BYTES:
+        raise CalibrationInputError("calibration label files may not exceed 2 MiB")
     try:
-        text = raw.decode("utf-8")
+        text = payload.decode("utf-8")
     except UnicodeDecodeError:
         raise CalibrationInputError("calibration labels must use valid UTF-8") from None
-    if source.suffix == ".json":
+    if suffix == ".json":
         return _load_json_manifest(text)
     return _load_csv_manifest(text)
+
+
+def render_calibration_template(
+    *,
+    dataset: DatasetIdentity,
+    metric: MetricIdentity,
+    rows: tuple[CalibrationTemplateRow, ...],
+    file_format: Literal["json", "csv"],
+) -> bytes:
+    """Render a deterministic label template with empty reviewer-only fields."""
+
+    if not isinstance(dataset, DatasetIdentity):
+        raise TypeError("dataset must be a DatasetIdentity")
+    if not isinstance(metric, MetricIdentity):
+        raise TypeError("metric must be a MetricIdentity")
+    if not rows:
+        raise CalibrationInputError("calibration templates require at least one result")
+    ordered = tuple(
+        sorted(
+            rows,
+            key=lambda row: (
+                row.case_position if row.case_position is not None else MAX_CALIBRATION_LABELS,
+                row.item_id,
+            ),
+        )
+    )
+    identifiers = [row.item_id for row in ordered]
+    if len(identifiers) != len(set(identifiers)):
+        raise CalibrationInputError("calibration template item_id values must be unique")
+    if len(ordered) > MAX_CALIBRATION_LABELS:
+        raise CalibrationInputError("calibration manifests may contain at most 10000 labels")
+
+    if file_format == "json":
+        return _canonical_json_bytes(
+            {
+                "dataset": dataset.model_dump(mode="json"),
+                "labels": [
+                    {
+                        "case_external_id": row.case_external_id,
+                        "case_position": row.case_position,
+                        "human_passed": None,
+                        "item_id": row.item_id,
+                        "reviewer_id": "",
+                        "score": row.score,
+                    }
+                    for row in ordered
+                ],
+                "metric": metric.model_dump(mode="json"),
+                "schema_version": LABEL_SCHEMA_VERSION,
+            }
+        )
+    if file_format == "csv":
+        stream = io.StringIO(newline="")
+        writer = csv.DictWriter(stream, fieldnames=_CSV_TEMPLATE_COLUMNS, lineterminator="\r\n")
+        writer.writeheader()
+        dataset_payload = dataset.model_dump(mode="json")
+        metric_payload = metric.model_dump(mode="json")
+        for row in ordered:
+            writer.writerow(
+                {
+                    "schema_version": LABEL_SCHEMA_VERSION,
+                    "dataset_id": dataset_payload["id"],
+                    "dataset_version": dataset_payload["version"],
+                    "dataset_sha256": dataset_payload["sha256"],
+                    "metric_name": metric_payload["name"],
+                    "metric_version": metric_payload["version"],
+                    "direction": metric_payload["direction"],
+                    "case_position": ("" if row.case_position is None else str(row.case_position)),
+                    "case_external_id": _formula_safe_csv_text(row.case_external_id or ""),
+                    "item_id": row.item_id,
+                    "score": row.score,
+                    "human_passed": "",
+                    "reviewer_id": "",
+                }
+            )
+        return stream.getvalue().encode("utf-8")
+    raise CalibrationInputError("calibration template format must be json or csv")
 
 
 def canonical_manifest_bytes(manifest: CalibrationLabelManifest) -> bytes:
@@ -210,10 +333,15 @@ def canonical_manifest_bytes(manifest: CalibrationLabelManifest) -> bytes:
 
     if not isinstance(manifest, CalibrationLabelManifest):
         raise TypeError("manifest must be a CalibrationLabelManifest")
-    payload = manifest.model_dump(mode="json")
+    payload = manifest.model_dump(mode="json", exclude_none=True)
     labels = payload["labels"]
     if not isinstance(labels, list):  # pragma: no cover - guaranteed by the model
         raise CalibrationInputError("calibration label manifest is invalid")
+    for row in labels:
+        if not isinstance(row, dict):  # pragma: no cover - guaranteed by the model
+            raise CalibrationInputError("calibration label manifest is invalid")
+        row.pop("case_external_id", None)
+        row.pop("case_position", None)
     payload["labels"] = sorted(labels, key=lambda row: row["item_id"])
     return _canonical_json_bytes(payload)
 
@@ -456,19 +584,25 @@ def _load_csv_manifest(text: str) -> CalibrationLabelManifest:
     try:
         reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
         fieldnames = reader.fieldnames
+        field_set = frozenset(fieldnames or ())
         if (
             fieldnames is None
-            or len(fieldnames) != len(_CSV_COLUMNS)
-            or set(fieldnames) != set(_CSV_COLUMNS)
+            or field_set not in {frozenset(_CSV_COLUMNS), frozenset(_CSV_TEMPLATE_COLUMNS)}
+            or len(fieldnames) != len(field_set)
         ):
             raise CalibrationInputError("calibration label CSV columns are invalid")
+        has_review_mapping = field_set == frozenset(_CSV_TEMPLATE_COLUMNS)
         metadata: tuple[str, ...] | None = None
         labels: list[dict[str, object]] = []
         for row in reader:
-            if None in row or any(row.get(column) is None for column in _CSV_COLUMNS):
+            active_columns = tuple(fieldnames)
+            if None in row or any(row.get(column) is None for column in active_columns):
                 raise CalibrationInputError("calibration label CSV rows are invalid")
-            values = {column: row[column] for column in _CSV_COLUMNS}
-            if any(value != value.strip() for value in values.values()):
+            values = {column: row[column] for column in active_columns}
+            strict_values = (
+                value for column, value in values.items() if column != "case_external_id"
+            )
+            if any(value != value.strip() for value in strict_values):
                 raise CalibrationInputError("calibration label CSV rows are invalid")
             row_metadata = tuple(values[column] for column in _CSV_METADATA_COLUMNS)
             if metadata is None:
@@ -484,14 +618,28 @@ def _load_csv_manifest(text: str) -> CalibrationLabelManifest:
                 score = float(values["score"])
             except ValueError:
                 raise CalibrationInputError("calibration label CSV scores are invalid") from None
-            labels.append(
-                {
-                    "item_id": values["item_id"],
-                    "score": score,
-                    "human_passed": decision == "true",
-                    "reviewer_id": values["reviewer_id"],
-                }
-            )
+            label: dict[str, object] = {
+                "item_id": values["item_id"],
+                "score": score,
+                "human_passed": decision == "true",
+                "reviewer_id": values["reviewer_id"],
+            }
+            if has_review_mapping:
+                case_position = values["case_position"]
+                case_external_id = values["case_external_id"]
+                if bool(case_position) != bool(case_external_id):
+                    raise CalibrationInputError(
+                        "calibration label CSV review mapping is incomplete"
+                    )
+                if case_position:
+                    try:
+                        label["case_position"] = int(case_position)
+                    except ValueError:
+                        raise CalibrationInputError(
+                            "calibration label CSV case positions are invalid"
+                        ) from None
+                    label["case_external_id"] = case_external_id
+            labels.append(label)
             if len(labels) > MAX_CALIBRATION_LABELS:
                 raise CalibrationInputError(
                     "calibration manifests may contain at most 10000 labels"
@@ -530,6 +678,18 @@ def _safe_identifier(value: object) -> str:
     if value != value.strip():
         raise ValueError("value must be a safe identifier")
     return value
+
+
+def formula_safe_case_external_id(value: str) -> str:
+    """Return the deterministic spreadsheet-safe representation used in CSV templates."""
+
+    if not isinstance(value, str):
+        raise TypeError("case external ID must be a string")
+    return _formula_safe_csv_text(value)
+
+
+def _formula_safe_csv_text(value: str) -> str:
+    return f"'{value}" if value.startswith(("=", "+", "-", "@", "\t", "\r")) else value
 
 
 def _sha256_value(value: object) -> str:

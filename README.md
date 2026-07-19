@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/ownasquare/evalforge/actions/workflows/ci.yml/badge.svg)](https://github.com/ownasquare/evalforge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-256078.svg)](LICENSE)
-[![Release: v0.2.0 beta](https://img.shields.io/badge/release-v0.2.0%20beta-256078.svg)](https://github.com/ownasquare/evalforge/releases/tag/v0.2.0)
+[![Release: v0.3.0 beta](https://img.shields.io/badge/release-v0.3.0%20beta-256078.svg)](https://github.com/ownasquare/evalforge/releases/tag/v0.3.0)
 
 **Compare prompts and models against the same test set before you ship.**
 
@@ -15,9 +15,11 @@ works offline, and needs no API key.
 
 ## Try it locally
 
-You need Python 3.11 or 3.12 and [uv](https://docs.astral.sh/uv/). From a local clone:
+You need Python 3.11 or 3.12, Git, and [uv](https://docs.astral.sh/uv/):
 
 ```bash
+git clone https://github.com/ownasquare/evalforge.git
+cd evalforge
 uv sync --frozen
 uv run evalforge demo
 ```
@@ -27,7 +29,7 @@ the API and dashboard for you. Press `Ctrl+C` when you are done.
 
 For a guided first run, see [Getting started](docs/getting-started.md).
 For an immutable source snapshot and verified package artifacts, use the
-[v0.2.0 public-beta release](https://github.com/ownasquare/evalforge/releases/tag/v0.2.0).
+[v0.3.0 public-beta release](https://github.com/ownasquare/evalforge/releases/tag/v0.3.0).
 
 ## The core workflow
 
@@ -40,8 +42,11 @@ details stay out of the way until you need them.
 
 ### Optional: check a threshold against human labels
 
-If reviewers have labeled a calibration set, create a private offline report without starting the
-dashboard or contacting a provider:
+For a completed run, open **Human calibration** in Results to download a run-linked label template
+and import a private review. EvalForge verifies every score against stored result evidence and keeps
+only the derived report and hashes.
+
+To work entirely outside the dashboard and application database, use the offline CLI:
 
 ```bash
 uv run evalforge calibrate examples/calibration-labels.json --threshold 0.7 --output-dir ./private-calibration
@@ -85,6 +90,7 @@ into a source build. See [Extending EvalForge](docs/extending.md) and the tested
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
 - [Getting started](docs/getting-started.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Evaluation methodology](docs/evaluation-methodology.md)

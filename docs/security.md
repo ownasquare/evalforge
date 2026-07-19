@@ -106,6 +106,16 @@ Operators still own database, audit, and export retention. Evaluation evidence m
 proprietary or personal data. Storage encryption, backups, deletion policy, legal hold behavior,
 and key management must be selected for the deployment environment.
 
+Run-linked calibration uploads are streamed directly into bounded memory rather than parsed as
+multipart files, then verified against immutable result evidence. Raw pass/fail decisions and
+opaque reviewer identifiers are discarded; only a content-minimized aggregate report, hashes,
+linkage, counts, and actor attribution are stored.
+The endpoint requires a matching non-simple CSV or JSON content type, so an unrelated browser
+origin cannot mutate loopback local mode with a CORS-safelisted `text/plain` request.
+Reviewer files remain sensitive source evidence and must stay outside the repository and under the
+operator's access and retention policy. Calibration audit events contain hashes and counts, never
+raw labels or reviewer identifiers.
+
 ## Residual risks
 
 - Lexical metrics can disagree with human judgment or be gamed by overlap.

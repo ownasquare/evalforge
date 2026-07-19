@@ -65,7 +65,9 @@ def test_public_adoption_files_and_templates_exist() -> None:
         "SUPPORT.md",
         ".github/ISSUE_TEMPLATE/bug_report.yml",
         ".github/ISSUE_TEMPLATE/feature_request.yml",
+        ".github/ISSUE_TEMPLATE/question.yml",
         ".github/PULL_REQUEST_TEMPLATE.md",
+        "docs/README.md",
         "docs/extending.md",
         "docs/getting-started.md",
         "docs/troubleshooting.md",
@@ -78,6 +80,14 @@ def test_public_adoption_files_and_templates_exist() -> None:
     }
 
     assert not {path for path in required if not (ROOT / path).is_file()}
+
+
+def test_first_run_instructions_start_from_a_fresh_clone() -> None:
+    for relative_path in ("README.md", "docs/getting-started.md"):
+        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "git clone https://github.com/ownasquare/evalforge.git" in text
+        assert "cd evalforge" in text
+        assert text.index("git clone") < text.index("uv sync --frozen")
 
 
 def test_internal_execution_artifacts_are_ignored_from_public_tree() -> None:

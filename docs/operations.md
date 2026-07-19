@@ -160,10 +160,21 @@ The neutral `src/evalforge/streamlit_app.py` entry point keeps Streamlit's route
 separate from the implementation `dashboard/pages/` package. Direct cold bookmarks to Home,
 Results, Compare, New evaluation, Benchmarks, Models, and Settings are covered by browser tests.
 
-## Offline calibration reports
+## Human calibration reports
 
-Human-label calibration is an optional CLI workflow, separate from the dashboard and provider
-configuration:
+Human-label calibration is optional and never contacts a model provider. For a completed run, open
+**Results → Human calibration**, choose one candidate and metric, then download the generated CSV
+template. Fill only the decision and opaque reviewer columns, keep that file private, and import it
+with the threshold you want to evaluate. Rows follow the case order shown in Results; fill
+`human_passed` and an anonymous `reviewer_id`.
+
+The API streams the raw CSV or JSON body into at most 2 MiB of memory, validates every uploaded case
+mapping, identity, and score against immutable result rows, then discards it without multipart temp
+files. It stores only the derived aggregate report and hashes. It does not retain raw reviewer
+decisions or identifiers, choose a threshold, approve a model, or claim production validation.
+Editors import; Viewers can download templates and read report history.
+
+The CLI remains available when a report should stay entirely outside the application database:
 
 ```bash
 uv run evalforge calibrate examples/calibration-labels.json --threshold 0.7 \
@@ -176,9 +187,10 @@ is already present. A conflicting, modified, or symbolic-link destination fails 
 output directory private and use opaque reviewer IDs such as `reviewer-01`; do not place reviewer
 names, email addresses, credentials, or source content in those identifiers.
 
-This workflow is offline only. It does not read provider settings, contact a provider, choose a
-threshold automatically, measure reviewer agreement, or validate a production deployment. The
-report records those boundaries explicitly. See
+Both workflows are offline only. They do not read provider settings, contact a provider, choose a
+threshold automatically, measure reviewer agreement, or validate a production deployment. Every
+report records those boundaries explicitly. Operators own retention for uploaded source files,
+database reports, and local CLI outputs. See
 [Evaluation methodology](evaluation-methodology.md#offline-threshold-calibration) for the schema and
 interpretation guidance.
 

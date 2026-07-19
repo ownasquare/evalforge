@@ -7,21 +7,25 @@ container runtime, or external model is required.
 
 Install:
 
+- Git;
 - Python 3.11 or 3.12; and
 - [uv](https://docs.astral.sh/uv/).
 
 Confirm both are available:
 
 ```bash
+git --version
 python3 --version
 uv --version
 ```
 
 ## 2. Start the demo
 
-From the repository folder:
+Clone EvalForge, enter the project folder, and start the demo:
 
 ```bash
+git clone https://github.com/ownasquare/evalforge.git
+cd evalforge
 uv sync --frozen
 uv run evalforge demo
 ```
@@ -68,17 +72,24 @@ Start with a small set of representative cases. Add edge cases and known regress
 
 ## Optional: check a threshold against human labels
 
-After reviewers have labeled a calibration set, generate a private offline report from either
-copyable example format:
+For a completed run, open **Human calibration** in Results, choose one candidate and metric, and
+download the CSV label template. Rows follow the case order in Results and include the same case
+label. Fill `human_passed`, use an anonymous code in `reviewer_id`, then upload the file with the
+threshold you want to evaluate. EvalForge verifies the stored case mapping, result identities, and
+scores,
+keeps only the derived report and hashes, and never contacts a provider.
+
+To keep the report entirely outside the application database, use either copyable example format
+with the CLI:
 
 ```bash
 uv run evalforge calibrate examples/calibration-labels.json --threshold 0.7 --output-dir ./private-calibration
 ```
 
 The same command accepts `examples/calibration-labels.csv`. Equivalent JSON and CSV inputs produce
-the same manifest identity. The command makes no provider call and does not select or approve a
-threshold for you. See [Evaluation methodology](evaluation-methodology.md#offline-threshold-calibration)
-before using the report as release evidence.
+the same manifest identity. Neither workflow selects or approves a threshold for you. See
+[Evaluation methodology](evaluation-methodology.md#offline-threshold-calibration) before using the
+report as release evidence.
 
 ## Stop and resume
 

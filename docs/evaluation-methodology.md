@@ -125,8 +125,7 @@ production_validated = false
 
 They do not imply the labels are representative, the threshold generalizes, or a production judge
 is accurate. Sample selection, reviewer agreement, task coverage, and deployment shift still need
-human governance. The optional CLI turns a versioned label manifest into deterministic local
-evidence without adding a label-ingestion API or dashboard workflow:
+human governance. The optional CLI turns a versioned label manifest into a private local report:
 
 ```bash
 uv run evalforge calibrate examples/calibration-labels.json --threshold 0.7 \
@@ -161,6 +160,18 @@ The proof boundary is exact:
 - no production-validation claim.
 
 The included label files are copyable fixtures, not evidence that a human review was completed.
+
+For a completed dashboard run, turn on **Human calibration** to create the same class of report with
+stronger provenance binding. The CSV template follows the visible case order and includes the case
+label shown in Results, so reviewers can reliably match each row to the model output. API clients
+may request the template as JSON or CSV. EvalForge then verifies every uploaded dataset, metric,
+case mapping, result ID, and score against immutable run evidence. Only the derived report, its
+hashes, run/candidate linkage, and actor attribution are persisted. Raw decisions and opaque
+reviewer IDs remain in the reviewer's private file and are not returned by the API or dashboard.
+
+Each upload remains a separate immutable report. EvalForge does not merge reviewer files, average
+decisions, resolve disagreement, or promote a threshold. Use separate reports to preserve distinct
+review sets and apply your own documented adjudication policy outside this bounded workflow.
 
 ## Calibration guidance
 

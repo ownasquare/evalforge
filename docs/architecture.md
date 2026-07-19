@@ -113,6 +113,9 @@ work is retained and is not automatically repeated.
   disclosures, spend ceilings, progress, and lease state.
 - `run_candidates` and `evaluation_results` preserve candidate/case snapshots, output, provider
   metadata, usage, latency, cost, errors, and metric evidence.
+- `calibration_reports` link one terminal run, candidate, and metric to an immutable,
+  content-minimized threshold report. Uploaded labels and reviewer identifiers are streamed into
+  bounded memory and are not stored or multipart-spooled to temporary files.
 - `execution_attempts` preserve claim, heartbeat, takeover, outcome, and error-class evidence.
 - `audit_events` record actor, workspace, action, resource, request ID, and bounded metadata.
 
@@ -143,6 +146,12 @@ Run exports use the versioned `evalforge.run-export.v1` envelope. Canonical JSON
 SHA-256 recorded in the response header and local sink receipt. `content_redacted` is the dashboard
 default; `full_evidence` requires an explicit disclosure choice and may contain proprietary or
 personal content.
+
+Run-linked calibration uses the API as its trust boundary. The server derives formula-safe label
+templates in visible case order and rejects client-supplied dataset, metric, case mapping, item, or
+score values that do not match immutable run evidence. Reports are append-only, workspace scoped,
+and SHA-256-addressed; identical imports return the existing record. There is no report mutation,
+reviewer-management, or threshold-promotion path.
 
 ## Observability
 

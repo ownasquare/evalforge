@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+import pytest
 from streamlit.testing.v1 import AppTest
 
 from evalforge.dashboard.client import ApiClient, ApiError
@@ -26,6 +27,26 @@ from evalforge.dashboard.state import initialize_state
 
 st.set_page_config(page_title="EvalForge run detail test", layout="wide")
 initialize_state()
+render()
+"""
+
+VIEWER_RUN_DETAIL_PAGE_SOURCE = """
+import streamlit as st
+from evalforge.dashboard.auth import WorkspaceOption
+from evalforge.dashboard.pages.run_detail import render
+from evalforge.dashboard.state import (
+    configure_client,
+    initialize_state,
+    select_workspace,
+    sync_identity,
+)
+
+st.set_page_config(page_title="EvalForge viewer run detail test", layout="wide")
+initialize_state()
+sync_identity("viewer-fingerprint")
+workspace = WorkspaceOption("workspace-1", "Quality", "viewer")
+select_workspace(workspace)
+configure_client(identity_fingerprint="viewer-fingerprint", workspace_id=workspace.id)
 render()
 """
 
@@ -377,6 +398,7 @@ def test_render_shows_directional_scorecard(
             ],
         },
         "/api/v1/runs/run-1/results": {"items": [result], "total": 1},
+        "/api/v1/runs/run-1/calibrations": {"items": [], "total": 0},
     }
     monkeypatch.setattr(ApiClient, "_request_response", _fake_transport(routes))
     app = AppTest.from_string(RUN_DETAIL_PAGE_SOURCE, default_timeout=15)
@@ -468,6 +490,194 @@ def test_render_explains_completed_result_and_preserves_run_for_compare(monkeypa
     assert all(not button.disabled for button in prepare_buttons)
 
 
+def test_human_calibration_does_not_load_until_an_editor_opens_tools(monkeypatch) -> None:
+    routes = _calibration_page_routes()
+    requests: list[tuple[str, str]] = []
+    history_params: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ApiClient,
+        "_request_response",
+        _calibration_transport(
+            routes,
+            requests=requests,
+            history_params=history_params,
+        ),
+    )
+    app = AppTest.from_string(RUN_DETAIL_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    assert (
+        next(toggle for toggle in app.toggle if toggle.label == "Show calibration tools").value
+        is False
+    )
+    assert all("/calibrations" not in path for _, path in requests)
+    assert app.get("file_uploader") == []
+    assert app.get("download_button") == []
+    captions = [str(element.value) for element in app.caption]
+    assert any("sent to this EvalForge server" in value for value in captions)
+    assert any("not stored" in value for value in captions)
+
+    _open_calibration_tools(app)
+
+    assert not app.exception
+    assert {selectbox.label for selectbox in app.selectbox} >= {"Candidate", "Metric"}
+    assert [uploader.type for uploader in app.get("file_uploader")] == ["file_uploader"]
+    assert [button.label for button in app.get("download_button")] == ["Download label template"]
+    assert all(button.label != "Prepare CSV template" for button in app.button)
+    import_button = next(button for button in app.button if button.label == "Import calibration")
+    assert import_button.disabled is True
+    assert any("No calibration reports yet" in str(element.value) for element in app.info)
+    assert ("GET", "/api/v1/runs/run-1/calibrations/template") in requests
+    assert ("GET", "/api/v1/runs/run-1/calibrations") in requests
+    assert history_params == [
+        {
+            "candidate_id": "candidate-1",
+            "metric_name": "correctness",
+            "limit": 100,
+            "page": 1,
+        }
+    ]
+    captions = [str(element.value) for element in app.caption]
+    assert any("both human_passed and reviewer_id" in value for value in captions)
+    assert any("anonymous reviewer code" in value for value in captions)
+
+
+def test_viewer_can_download_template_but_has_no_import_action(monkeypatch) -> None:
+    routes = _calibration_page_routes()
+    monkeypatch.setattr(ApiClient, "_request_response", _calibration_transport(routes))
+    app = AppTest.from_string(VIEWER_RUN_DETAIL_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+
+    assert not app.exception
+    assert app.get("file_uploader") == []
+    assert app.get("download_button") == []
+
+    _open_calibration_tools(app)
+
+    assert app.get("file_uploader") == []
+    assert all(button.label != "Import calibration" for button in app.button)
+    assert any("Read-only" in str(element.value) for element in app.caption)
+    assert [button.label for button in app.get("download_button")] == ["Download label template"]
+
+
+@pytest.mark.parametrize(
+    ("status", "message_fragment", "message_kind"),
+    [
+        ("created", "Calibration evidence saved", "success"),
+        ("already_exists", "already exists", "info"),
+    ],
+)
+def test_editor_import_handles_created_and_idempotent_responses(
+    monkeypatch,
+    status: str,
+    message_fragment: str,
+    message_kind: str,
+) -> None:
+    routes = _calibration_page_routes()
+    requests: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        ApiClient,
+        "_request_response",
+        _calibration_transport(routes, import_status=status, requests=requests),
+    )
+    app = AppTest.from_string(RUN_DETAIL_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+    _open_calibration_tools(app)
+    uploader = app.get("file_uploader")[0]
+    uploader.upload(
+        "labels.csv",
+        (b"item_id,score,human_passed,reviewer_id\nresult-1,0.9,true,reviewer-1\n"),
+        "text/csv",
+    ).run()
+    import_button = next(button for button in app.button if button.label == "Import calibration")
+    assert import_button.disabled is False
+    import_button.click().run()
+
+    assert not app.exception
+    messages = getattr(app, message_kind)
+    assert any(message_fragment in str(element.value) for element in messages)
+    assert requests.count(("POST", "/api/v1/runs/run-1/calibrations")) == 1
+
+
+def test_editor_import_surfaces_safe_api_error(monkeypatch) -> None:
+    routes = _calibration_page_routes()
+    monkeypatch.setattr(
+        ApiClient,
+        "_request_response",
+        _calibration_transport(routes, import_error=ApiError("Stored scores do not match")),
+    )
+    app = AppTest.from_string(RUN_DETAIL_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+    _open_calibration_tools(app)
+    app.get("file_uploader")[0].upload(
+        "labels.csv",
+        (b"item_id,score,human_passed,reviewer_id\nresult-1,0.1,true,reviewer-1\n"),
+        "text/csv",
+    ).run()
+    next(button for button in app.button if button.label == "Import calibration").click().run()
+
+    assert not app.exception
+    assert any("Stored scores do not match" in str(element.value) for element in app.text)
+
+
+def test_calibration_latest_report_shows_summary_and_evidence_boundaries(monkeypatch) -> None:
+    report = {
+        "id": "calibration-1",
+        "run_id": "run-1",
+        "candidate_id": "candidate-1",
+        "dataset": {"id": "dataset-1", "version": 2, "sha256": "dataset-hash"},
+        "metric": {
+            "name": "correctness",
+            "version": "1.0.0",
+            "direction": "higher_is_better",
+        },
+        "selected_threshold": 0.7,
+        "label_manifest_sha256": "manifest-hash",
+        "report_sha256": "report-hash",
+        "evidence_kind": "offline_statistical_evidence",
+        "production_validated": False,
+        "sample_size": 10,
+        "human_pass_count": 8,
+        "human_fail_count": 2,
+        "reviewer_count": 2,
+        "precision": 0.8,
+        "recall": 0.75,
+        "f1": 0.774194,
+        "confusion_matrix": {
+            "true_positive": 6,
+            "true_negative": 1,
+            "false_positive": 1,
+            "false_negative": 2,
+        },
+        "created_at": "2026-07-19T03:00:00Z",
+    }
+    routes = _calibration_page_routes(reports=[report])
+    monkeypatch.setattr(ApiClient, "_request_response", _calibration_transport(routes))
+    app = AppTest.from_string(RUN_DETAIL_PAGE_SOURCE, default_timeout=15)
+
+    app.run()
+    _open_calibration_tools(app)
+
+    assert not app.exception
+    metric_values = {metric.label: metric.value for metric in app.metric}
+    assert metric_values["Sample size"] == "10"
+    assert metric_values["Precision"] == "80.0%"
+    assert metric_values["Recall"] == "75.0%"
+    assert metric_values["F1"] == "77.4%"
+    markdown = [str(element.value) for element in app.markdown]
+    assert any("Offline evidence" in value for value in markdown)
+    assert any("Not production validated" in value for value in markdown)
+    technical = next(status for status in app.status if status.label == "Technical details")
+    technical_text = "\n".join(str(element.value) for element in technical.code)
+    assert "manifest-hash" in technical_text
+    assert "report-hash" in technical_text
+
+
 def _fake_transport(routes: dict[str, Any]):
     def request_response(
         _: ApiClient,
@@ -481,3 +691,107 @@ def _fake_transport(routes: dict[str, Any]):
         return httpx.Response(200, json=payload)
 
     return request_response
+
+
+def _calibration_page_routes(
+    *,
+    reports: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    result = {
+        "id": "result-1",
+        "run_candidate_id": "candidate-1",
+        "status": "completed",
+        "aggregate_score": 0.9,
+        "aggregate_passed": True,
+        "metric_results": {
+            "correctness": {
+                "name": "correctness",
+                "score": 0.9,
+                "direction": "higher_is_better",
+                "threshold": 0.8,
+                "applicability": "applicable",
+                "passed": True,
+            }
+        },
+    }
+    return {
+        "/api/v1/runs": {
+            "items": [
+                {
+                    "id": "run-1",
+                    "name": "Calibration review",
+                    "status": "completed",
+                    "created_at": "2026-07-19T02:00:00Z",
+                }
+            ]
+        },
+        "/api/v1/runs/run-1": {
+            "id": "run-1",
+            "name": "Calibration review",
+            "status": "completed",
+            "created_at": "2026-07-19T02:00:00Z",
+            "completed_items": 1,
+            "total_items": 1,
+            "candidates": [{"id": "candidate-1", "label": "Baseline"}],
+            "metric_configuration_snapshot": {
+                "metrics": [
+                    {
+                        "name": "correctness",
+                        "version": "1.0.0",
+                        "direction": "higher_is_better",
+                        "threshold": 0.8,
+                    }
+                ]
+            },
+        },
+        "/api/v1/runs/run-1/results": {"items": [result], "total": 1},
+        "/api/v1/runs/run-1/calibrations": {
+            "items": reports or [],
+            "total": len(reports or []),
+            "page": 1,
+            "limit": 100,
+        },
+    }
+
+
+def _calibration_transport(
+    routes: dict[str, Any],
+    *,
+    import_status: str = "created",
+    import_error: ApiError | None = None,
+    requests: list[tuple[str, str]] | None = None,
+    history_params: list[dict[str, Any]] | None = None,
+):
+    def request_response(
+        _: ApiClient,
+        method: str,
+        path: str,
+        **_kwargs: Any,
+    ) -> httpx.Response:
+        if requests is not None:
+            requests.append((method, path))
+        if history_params is not None and method == "GET" and path.endswith("/calibrations"):
+            history_params.append(dict(_kwargs.get("params", {})))
+        if path.endswith("/calibrations/template"):
+            return httpx.Response(200, content=b"item_id,score,human_passed\nresult-1,0.9,\n")
+        if method == "POST" and path.endswith("/calibrations"):
+            if import_error is not None:
+                raise import_error
+            return httpx.Response(
+                201 if import_status == "created" else 200,
+                json={
+                    "status": import_status,
+                    "report": {"id": "calibration-1"},
+                },
+            )
+        payload = routes.get(path)
+        if payload is None:
+            raise ApiError("not found", status_code=404)
+        return httpx.Response(200, json=payload)
+
+    return request_response
+
+
+def _open_calibration_tools(app: AppTest) -> None:
+    toggle = next(toggle for toggle in app.toggle if toggle.label == "Show calibration tools")
+    toggle.set_value(True).run()

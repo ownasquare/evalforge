@@ -437,7 +437,7 @@ def test_populated_0002_identity_migration_preserves_evidence_and_scopes_every_r
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert revision == "0004_durable_execution_leases"
+        assert revision == "0005_calibration_reports"
         assert schema_differences == []
         assert check_database_readiness(migrated_engine) is True
 
@@ -476,7 +476,7 @@ def test_populated_0002_identity_migration_preserves_evidence_and_scopes_every_r
         with verification_engine.connect() as connection:
             assert (
                 connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                == "0004_durable_execution_leases"
+                == "0005_calibration_reports"
             )
     finally:
         verification_engine.dispose()

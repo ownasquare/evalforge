@@ -111,6 +111,10 @@ requests cannot contain a provider base URL or API key.
 | `GET` | `/api/v1/runs/{run_id}/results` | Viewer | Page output and metric evidence. |
 | `GET` | `/api/v1/runs/{run_id}/comparison` | Viewer | Baseline/challenger summaries and bounded paired deltas. |
 | `GET` | `/api/v1/runs/{run_id}/export` | Viewer | Export JSON, formula-safe CSV, or a versioned package. |
+| `GET` | `/api/v1/runs/{run_id}/calibrations/template` | Viewer | Download a candidate/metric label template derived from stored results. |
+| `POST` | `/api/v1/runs/{run_id}/calibrations` | Editor | Validate private human labels and persist an immutable aggregate report. |
+| `GET` | `/api/v1/runs/{run_id}/calibrations` | Viewer | Page content-minimized history; optionally filter by candidate and metric before pagination. |
+| `GET` | `/api/v1/runs/{run_id}/calibrations/{report_id}` | Viewer | Read one immutable calibration report. |
 
 `POST /runs` returns `202 Accepted` and a `Location` header. `Idempotency-Key` is optional and is
 scoped to the active workspace. Real-provider creation additionally requires:
@@ -130,6 +134,28 @@ Preflight reports `automatic_provider_retries: 0`; `maximum_provider_request_cou
 logical `provider_call_count`. Generation does not automatically retry 429 or other provider
 failures because a generic compatible gateway cannot prove that an upstream billable request was
 never created.
+
+### Run-linked human calibration
+
+Template and import requests identify one `candidate_id` and configured `metric_name`. Templates
+contain case order and case labels that match Results, plus immutable result IDs and stored metric
+scores for completed, applicable results; the reviewer fills only `human_passed` and an opaque
+`reviewer_id`. Imports also provide a finite
+`selected_threshold` from `0` to `1`. Import the CSV or JSON file as the raw request body and set
+the `format` query parameter to `csv` or `json`; this avoids multipart temp-file spooling.
+
+The API does not trust the uploaded identities or scores. It verifies the run is terminal, the
+candidate belongs to it, the dataset and metric identities match its snapshots, and every item ID
+and score match a completed applicable result before calculating a report. JSON and CSV uploads are
+streamed into bounded memory at 2 MiB and discarded after validation. An identical
+run/candidate/manifest/threshold import is idempotent; the response
+reports whether the immutable record was created or already existed.
+
+Raw labels and reviewer identifiers are processed in memory and discarded. List and detail
+responses contain only linkage, hashes, sample/reviewer counts, confusion counts, precision,
+recall, F1, threshold, and the explicit `offline_statistical_evidence` /
+`production_validated=false` boundary. There is no update, delete, approval, or automatic threshold
+selection endpoint.
 
 ## Versioned evidence packages
 

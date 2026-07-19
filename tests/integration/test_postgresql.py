@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, func, select, update
 from sqlalchemy.engine import URL, make_url
@@ -17,6 +19,7 @@ from evalforge.api.app import create_app
 from evalforge.config import Settings
 from evalforge.container import apply_migrations, build_container
 from evalforge.database import (
+    Base,
     check_database_readiness,
     create_database_engine,
     create_session_factory,
@@ -96,6 +99,9 @@ def postgres_engine() -> Iterator[Engine]:
 
 def test_postgresql_migration_seed_and_run_lifecycle(postgres_engine: Engine) -> None:
     assert check_database_readiness(postgres_engine) is True
+    with postgres_engine.connect() as connection:
+        migration_context = MigrationContext.configure(connection, opts={"compare_type": True})
+        assert compare_metadata(migration_context, Base.metadata) == []
 
     factory = create_session_factory(postgres_engine)
     context = local_workspace_context()

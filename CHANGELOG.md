@@ -15,6 +15,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - No changes yet.
 
+## [0.3.0] - 2026-07-19
+
+### Added
+
+- Run-linked human-calibration templates, verified label import, and immutable aggregate report
+  history in the Results screen.
+- A concise documentation index and a dedicated Question issue form.
+
+### Changed
+
+- Fresh-clone setup instructions now include the exact repository clone and folder commands.
+
 ## [0.2.0] - 2026-07-18
 
 ### Added
@@ -40,6 +52,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - Simplified first-run guidance and public project documentation.
 - Added tested source-extension examples and community templates.
 
-[Unreleased]: https://github.com/ownasquare/evalforge/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ownasquare/evalforge/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ownasquare/evalforge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ownasquare/evalforge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ownasquare/evalforge/releases/tag/v0.1.0
