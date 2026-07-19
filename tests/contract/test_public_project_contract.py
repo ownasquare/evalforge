@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 
 from evalforge.api.routes.datasets import _case_from_mapping, _decode_import
+from evalforge.evaluation.calibration_io import (
+    build_calibration_report,
+    canonical_manifest_bytes,
+    load_calibration_manifest,
+    manifest_sha256,
+)
 
 ROOT = Path(__file__).parents[2]
 IGNORED_PARTS = {
@@ -61,6 +69,8 @@ def test_public_adoption_files_and_templates_exist() -> None:
         "docs/extending.md",
         "docs/getting-started.md",
         "docs/troubleshooting.md",
+        "examples/calibration-labels.csv",
+        "examples/calibration-labels.json",
         "examples/extensions/custom_adapter.py",
         "examples/extensions/custom_evaluator.py",
         "examples/extensions/custom_export_sink.py",
@@ -116,3 +126,48 @@ def test_copyable_csv_benchmark_example_matches_the_import_contract() -> None:
     assert [case.external_id for case in cases] == ["refund-window", "password-reset"]
     assert cases[0].required_phrases == ["30 days"]
     assert cases[1].metadata_json["relevance_keywords"] == ["account email", "reset link"]
+
+
+def test_copyable_calibration_examples_are_equivalent_offline_evidence() -> None:
+    json_path = ROOT / "examples/calibration-labels.json"
+    csv_path = ROOT / "examples/calibration-labels.csv"
+
+    json_manifest = load_calibration_manifest(json_path)
+    csv_manifest = load_calibration_manifest(csv_path)
+
+    assert json_manifest == csv_manifest
+    assert canonical_manifest_bytes(json_manifest) == canonical_manifest_bytes(csv_manifest)
+    assert manifest_sha256(json_manifest) == manifest_sha256(csv_manifest)
+    assert len(json_manifest.labels) == 5
+    source_dataset_sha256 = hashlib.sha256(
+        (ROOT / "examples/customer-support.json").read_bytes()
+    ).hexdigest()
+    assert json_manifest.dataset.sha256 == source_dataset_sha256
+
+    payload = json.loads(
+        build_calibration_report(json_manifest, selected_threshold=0.7).payload_bytes
+    )
+    assert payload["production_validated"] is False
+    assert payload["evidence_kind"] == "offline_statistical_evidence"
+
+    json_document = json.loads(json_path.read_text(encoding="utf-8"))
+    public_field_names = set(csv_path.read_text(encoding="utf-8").splitlines()[0].split(","))
+    pending_nodes = [json_document]
+    while pending_nodes:
+        node = pending_nodes.pop()
+        if isinstance(node, dict):
+            public_field_names.update(node)
+            pending_nodes.extend(node.values())
+        elif isinstance(node, list):
+            pending_nodes.extend(node)
+
+    forbidden_fields = {
+        "email",
+        "api_key",
+        "credential",
+        "provider_api_key",
+        "provider_credential",
+        "provider_secret",
+        "secret",
+    }
+    assert public_field_names.isdisjoint(forbidden_fields)

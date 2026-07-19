@@ -125,8 +125,42 @@ production_validated = false
 
 They do not imply the labels are representative, the threshold generalizes, or a production judge
 is accurate. Sample selection, reviewer agreement, task coverage, and deployment shift still need
-human governance. Calibration is currently a library primitive: there is no label-ingestion API,
-dashboard workflow, or CLI, and no human-reviewed calibration run has been completed.
+human governance. The optional CLI turns a versioned label manifest into deterministic local
+evidence without adding a label-ingestion API or dashboard workflow:
+
+```bash
+uv run evalforge calibrate examples/calibration-labels.json --threshold 0.7 \
+  --output-dir ./private-calibration
+```
+
+The JSON envelope contains `schema_version`, a dataset identity (`id`, `version`, `sha256`), a metric
+identity (`name`, `version`, `direction`), and one or more labels. Each label has an `item_id`, a
+finite `score` from `0` to `1`, a `human_passed` decision, and an opaque `reviewer_id`. CSV uses the
+exact columns below and repeats identical dataset and metric metadata on every row:
+
+```text
+schema_version,dataset_id,dataset_version,dataset_sha256,metric_name,metric_version,direction,item_id,score,human_passed,reviewer_id
+```
+
+Use pseudonyms such as `reviewer-01`, not a name or email address. Equivalent labels produce the
+same canonical manifest hash regardless of row order or JSON/CSV formatting. The report filename is
+derived from its canonical payload SHA-256; writing the same report again is idempotent and returns
+`already_exists` after verifying the existing bytes.
+
+Read precision as the share of metric passes that reviewers also passed, recall as the share of
+human passes found by the metric, and F1 as their balance. Always inspect the confusion matrix and
+sample counts alongside those rates. The command evaluates the threshold you provide; it does not
+recommend or approve one.
+
+The proof boundary is exact:
+
+- offline only;
+- no provider call;
+- no automatic threshold selection;
+- no reviewer-agreement claim; and
+- no production-validation claim.
+
+The included label files are copyable fixtures, not evidence that a human review was completed.
 
 ## Calibration guidance
 
