@@ -9,12 +9,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ### Added
 
-- Offline JSON/CSV human-label ingestion and deterministic, idempotent calibration reports through
-  `evalforge calibrate`.
+- No changes yet.
 
 ### Changed
 
 - No changes yet.
+
+## [0.2.0] - 2026-07-18
+
+### Added
+
+- Offline JSON/CSV human-label ingestion and deterministic, private, idempotent calibration reports
+  through `evalforge calibrate`.
 
 ## [0.1.0] - 2026-07-18
 
@@ -34,5 +40,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - Simplified first-run guidance and public project documentation.
 - Added tested source-extension examples and community templates.
 
-[Unreleased]: https://github.com/ownasquare/evalforge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ownasquare/evalforge/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ownasquare/evalforge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ownasquare/evalforge/releases/tag/v0.1.0

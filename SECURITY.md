@@ -18,7 +18,8 @@ attaching logs or exports.
 
 | Version | Support status |
 | --- | --- |
-| `v0.1.0` | Supported public beta |
+| `v0.2.0` | Supported public beta |
+| `v0.1.x` | Unsupported |
 | `main` | Supported development version |
 
 EvalForge does not currently publish a long-term-support release. Security fixes may land on
