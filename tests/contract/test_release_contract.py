@@ -143,7 +143,13 @@ def test_release_workflow_builds_smokes_checksums_and_publishes_verified_tags() 
     assert 'bin/evalforge" --help' in workflow
     assert re.search(r"(?:sha256sum|shasum\s+-a\s+256).*SHA256SUMS", workflow)
     assert "gh release create" in workflow
+    assert "gh release upload" in workflow
+    assert "gh release edit" in workflow
     assert "--verify-tag" in workflow
+    assert "--draft" in workflow
+    assert "--draft=false" in workflow
+    assert workflow.index("gh release create") < workflow.index("gh release upload")
+    assert workflow.index("gh release upload") < workflow.index("gh release edit")
     assert "GH_TOKEN:" in workflow
     assert "${{ github.token }}" in workflow
 

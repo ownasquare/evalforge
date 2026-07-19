@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/ownasquare/evalforge/actions/workflows/ci.yml/badge.svg)](https://github.com/ownasquare/evalforge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-256078.svg)](LICENSE)
+[![Release: v0.1.0 beta](https://img.shields.io/badge/release-v0.1.0%20beta-256078.svg)](https://github.com/ownasquare/evalforge/releases/tag/v0.1.0)
 
 **Compare prompts and models against the same test set before you ship.**
 
@@ -25,6 +26,8 @@ Open `http://127.0.0.1:8501`. EvalForge creates a local database, installs sampl
 the API and dashboard for you. Press `Ctrl+C` when you are done.
 
 For a guided first run, see [Getting started](docs/getting-started.md).
+For an immutable source snapshot and verified package artifacts, use the
+[v0.1.0 public-beta release](https://github.com/ownasquare/evalforge/releases/tag/v0.1.0).
 
 ## The core workflow
 

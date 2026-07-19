@@ -28,3 +28,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 - Simplified first-run guidance and public project documentation.
 - Added tested source-extension examples and community templates.
+
+[Unreleased]: https://github.com/ownasquare/evalforge/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ownasquare/evalforge/releases/tag/v0.1.0

@@ -14,10 +14,15 @@ A useful report includes the affected version or commit, expected impact, a mini
 and any mitigation you have already tested. Remove credentials and private model content before
 attaching logs or exports.
 
-## Supported version
+## Supported versions
 
-The latest commit on the default branch is the supported development version. EvalForge is beta
-software and does not currently publish long-term-support releases.
+| Version | Support status |
+| --- | --- |
+| `v0.1.0` | Supported public beta |
+| `main` | Supported development version |
+
+EvalForge does not currently publish a long-term-support release. Security fixes may land on
+`main` before a new beta release is cut.
 
 ## Deployment boundary
 
