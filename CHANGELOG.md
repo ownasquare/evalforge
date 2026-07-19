@@ -9,8 +9,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ### Changed
 
-- Simplified first-run guidance and public project documentation.
-- Added tested source-extension examples and community templates.
+- No changes yet.
 
 ## [0.1.0] - 2026-07-18
 
@@ -24,3 +23,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - Content-redacted and full-evidence export packages with integrity hashes.
 - Explicit real-provider transfer, allowlist, and spend safeguards.
 - Automated unit, contract, integration, AppTest, PostgreSQL, and Playwright coverage.
+
+### Changed
+
+- Simplified first-run guidance and public project documentation.
+- Added tested source-extension examples and community templates.

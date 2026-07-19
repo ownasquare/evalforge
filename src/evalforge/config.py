@@ -12,6 +12,8 @@ from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_valida
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
+from evalforge import __version__
+
 Environment = Literal["development", "test", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 AuthMode = Literal["local", "oidc"]
@@ -96,7 +98,7 @@ class Settings(BaseSettings):
 
     auto_migrate: bool = True
     seed_demo: bool = False
-    application_version: str = Field(default="0.1.0", min_length=1, max_length=64)
+    application_version: str = Field(default=__version__, min_length=1, max_length=64)
 
     openai_api_key: SecretStr | None = Field(default=None, exclude=True, repr=False)
     openai_base_url: AnyHttpUrl = AnyHttpUrl("https://api.openai.com/v1")
