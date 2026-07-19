@@ -49,6 +49,7 @@ The earlier calibration command proved the statistical calculation, but it did n
 - Real workflow proof: created a 10-result offline comparison, downloaded a five-row template, imported completed labels, replayed the identical import, reloaded Results, and read the persisted report.
 - Idempotency proof: the first import returned `created`; the identical replay returned `already_exists` with the same report ID and hashes.
 - Browser proof: desktop and mobile layouts rendered without clipping the primary actions; the mobile report card stacked cleanly; console warning/error readback was empty.
+- Protected PR CI then passed the same release candidate against live PostgreSQL 3.11 and 3.12 service containers, both production Dockerfiles, E2E, and the quality/security suite.
 
 ## Data Integrity Classification
 
@@ -60,7 +61,7 @@ The browser and E2E proof used EvalForge's documented deterministic demo models 
 
 ## Production Validation Status
 
-Not production validated. Live OIDC, authorized provider evaluation, a disposable live PostgreSQL validation URL, and a production deployment remain separate external gates tracked in [#2](https://github.com/ownasquare/evalforge/issues/2), [#3](https://github.com/ownasquare/evalforge/issues/3), and [#4](https://github.com/ownasquare/evalforge/issues/4).
+Not production validated. Live OIDC, authorized provider evaluation, and a production deployment remain separate external gates tracked in [#2](https://github.com/ownasquare/evalforge/issues/2), [#3](https://github.com/ownasquare/evalforge/issues/3), and [#4](https://github.com/ownasquare/evalforge/issues/4). Live PostgreSQL compatibility is covered by protected GitHub CI, but that is database compatibility proof rather than production deployment proof.
 
 ## Localhost Validation Integrity
 
@@ -70,7 +71,7 @@ The browser used the real Streamlit-to-FastAPI boundary and a real SQLite databa
 
 - An initial full-suite run inherited temporary proof ports from a local `.env`, causing two launcher assertions to expect 8000 while receiving 8010. The temporary file was removed and the clean rerun passed all 431 applicable tests.
 - The dependency audit reported no known vulnerabilities; it correctly noted that the local, unpublished `evalforge-dashboard` package itself is not a PyPI dependency it can audit.
-- Three live PostgreSQL tests were skipped because `EVALFORGE_POSTGRES_TEST_URL` was not configured. PostgreSQL DDL compilation and migration-focused tests passed; live-engine proof remains unclaimed.
+- Three live PostgreSQL tests were skipped locally because `EVALFORGE_POSTGRES_TEST_URL` was not configured. PostgreSQL DDL compilation and migration-focused tests passed locally; protected PR and main CI later passed the live suite on PostgreSQL 3.11 and 3.12.
 
 ## Warning Suppression Status
 
@@ -86,7 +87,8 @@ No new warning suppression was added. Existing narrowly documented test annotati
 - Branch: `agent/persisted-calibration-evidence`.
 - Remote: `ownasquare/evalforge`.
 - Draft pull request: [#9](https://github.com/ownasquare/evalforge/pull/9).
-- Protected-main merge SHA and release verification are recorded separately after GitHub checks and the immutable v0.3.0 release complete.
+- Protected-main commit: `abf00360dabccebfb1dd6f2abe8fe91fba8f1c17`.
+- Immutable prerelease verification: [v0.3.0 release record](./2026-07-19-v0.3.0-release.md).
 
 ## Extra Mile Improvements
 
