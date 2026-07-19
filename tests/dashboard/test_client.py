@@ -222,6 +222,201 @@ def test_case_import_invalidates_cached_dataset_detail() -> None:
     assert refreshed["cases"] == [{"id": "case-1"}]
 
 
+def test_client_downloads_calibration_template_with_retryable_read_params() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.method == "GET"
+        assert request.url.path == "/api/v1/runs/run-1/calibrations/template"
+        assert dict(request.url.params) == {
+            "candidate_id": "candidate-1",
+            "metric_name": "correctness",
+            "format": "csv",
+        }
+        if calls == 1:
+            return httpx.Response(503, json={"detail": "warming"})
+        return httpx.Response(200, content=b"item_id,score,human_passed\n")
+
+    with ApiClient(
+        "http://api",
+        transport=httpx.MockTransport(handler),
+        max_read_attempts=2,
+        sleeper=lambda _: None,
+    ) as client:
+        template = client.calibration_template(
+            "run-1",
+            candidate_id="candidate-1",
+            metric_name="correctness",
+            template_format="csv",
+        )
+
+    assert calls == 2
+    assert template == b"item_id,score,human_passed\n"
+
+
+def test_client_lists_calibration_reports_with_optional_scope_filters() -> None:
+    observed_params: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed_params.append(dict(request.url.params))
+        return httpx.Response(200, json={"items": [], "total": 0})
+
+    with ApiClient("http://api", transport=httpx.MockTransport(handler)) as client:
+        client.calibration_reports(
+            "run-1",
+            candidate_id="candidate-1",
+            metric_name="correctness",
+            limit=25,
+            page=2,
+        )
+        client.calibration_reports("run-1", limit=10, page=1)
+
+    assert observed_params == [
+        {
+            "limit": "25",
+            "page": "2",
+            "candidate_id": "candidate-1",
+            "metric_name": "correctness",
+        },
+        {"limit": "10", "page": "1"},
+    ]
+
+
+def test_calibration_import_streams_raw_body_without_retry_and_invalidates_history() -> None:
+    imported = False
+    post_calls = 0
+    list_calls = 0
+    observed_content_type = ""
+    observed_body = b""
+    observed_params: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal imported, post_calls, list_calls, observed_content_type, observed_body
+        nonlocal observed_params
+        if request.method == "POST":
+            post_calls += 1
+            observed_content_type = request.headers["content-type"]
+            observed_body = request.content
+            observed_params = dict(request.url.params)
+            imported = True
+            return httpx.Response(
+                201,
+                json={"status": "created", "report": {"id": "calibration-1"}},
+            )
+        list_calls += 1
+        return httpx.Response(
+            200,
+            json={
+                "items": [{"id": "calibration-1"}] if imported else [],
+                "total": 1 if imported else 0,
+            },
+        )
+
+    with ApiClient("http://api", transport=httpx.MockTransport(handler)) as client:
+        assert client.calibration_reports("run-1") == {"items": [], "total": 0}
+        result = client.import_calibration(
+            "run-1",
+            candidate_id="candidate-1",
+            metric_name="correctness",
+            selected_threshold=0.7,
+            filename="labels.csv",
+            content=(b"item_id,score,human_passed,reviewer_id\nresult-1,0.9,true,reviewer-1\n"),
+            content_type="text/csv",
+        )
+        refreshed = client.calibration_reports("run-1")
+
+    assert result == {"status": "created", "report": {"id": "calibration-1"}}
+    assert refreshed == {"items": [{"id": "calibration-1"}], "total": 1}
+    assert post_calls == 1
+    assert list_calls == 2
+    assert observed_content_type == "text/csv"
+    assert observed_params == {
+        "candidate_id": "candidate-1",
+        "metric_name": "correctness",
+        "selected_threshold": "0.7",
+        "format": "csv",
+    }
+    assert observed_body == (
+        b"item_id,score,human_passed,reviewer_id\nresult-1,0.9,true,reviewer-1\n"
+    )
+
+
+def test_calibration_import_is_not_retried() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.method == "POST"
+        return httpx.Response(503, json={"detail": "busy"})
+
+    with (
+        ApiClient(
+            "http://api",
+            transport=httpx.MockTransport(handler),
+            max_read_attempts=3,
+            sleeper=lambda _: None,
+        ) as client,
+        pytest.raises(ApiError),
+    ):
+        client.import_calibration(
+            "run-1",
+            candidate_id="candidate-1",
+            metric_name="correctness",
+            selected_threshold=0.7,
+            filename="labels.csv",
+            content=b"labels",
+            content_type="text/csv",
+        )
+
+    assert calls == 1
+
+
+def test_client_rejects_invalid_calibration_inputs_before_request() -> None:
+    with ApiClient(
+        "http://api", transport=httpx.MockTransport(lambda _: httpx.Response(200))
+    ) as client:
+        with pytest.raises(ValueError, match="template format"):
+            client.calibration_template(
+                "run-1",
+                candidate_id="candidate-1",
+                metric_name="correctness",
+                template_format="pdf",
+            )
+        with pytest.raises(ValueError, match="threshold"):
+            client.import_calibration(
+                "run-1",
+                candidate_id="candidate-1",
+                metric_name="correctness",
+                selected_threshold=1.1,
+                filename="labels.csv",
+                content=b"labels",
+                content_type="text/csv",
+            )
+        with pytest.raises(ValueError, match="filename"):
+            client.import_calibration(
+                "run-1",
+                candidate_id="candidate-1",
+                metric_name="correctness",
+                selected_threshold=0.7,
+                filename="labels.txt",
+                content=b"labels",
+                content_type="text/plain",
+            )
+        with pytest.raises(ValueError, match="content type"):
+            client.import_calibration(
+                "run-1",
+                candidate_id="candidate-1",
+                metric_name="correctness",
+                selected_threshold=0.7,
+                filename="labels.json",
+                content=b"{}",
+                content_type="text/csv",
+            )
+
+
 def test_client_exports_run_evidence_in_raw_and_versioned_formats() -> None:
     requests: list[tuple[str, str, str | None, str | None]] = []
 

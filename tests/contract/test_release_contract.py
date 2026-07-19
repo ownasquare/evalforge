@@ -16,6 +16,8 @@ ENV_EXAMPLE = ROOT / ".env.example"
 README = ROOT / "README.md"
 SECURITY_POLICY = ROOT / "SECURITY.md"
 RELEASE_NOTES = ROOT / "docs" / "releases" / f"v{__version__}.md"
+BUG_REPORT = ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml"
+QUESTION_FORM = ROOT / ".github" / "ISSUE_TEMPLATE" / "question.yml"
 
 APPROVED_ACTION_PINS = {
     "actions/checkout": (
@@ -89,11 +91,15 @@ def test_changelog_has_a_clean_unreleased_section_and_shipped_release_notes() ->
     unreleased = _changelog_section(changelog, "Unreleased")
     released = _changelog_section(changelog, __version__)
     released_added = _subsection(released, "Added")
+    historical_calibration = _subsection(_changelog_section(changelog, "0.2.0"), "Added")
 
     assert _subsection(unreleased, "Added").strip() == "- No changes yet."
     assert _subsection(unreleased, "Changed").strip() == "- No changes yet."
-    assert "- Offline JSON/CSV human-label ingestion" in released_added
-    assert "`evalforge calibrate`" in released_added
+    assert "- Run-linked human-calibration templates" in released_added
+    assert "verified label import" in released_added
+    assert "immutable aggregate report" in released_added
+    assert "- Offline JSON/CSV human-label ingestion" in historical_calibration
+    assert "`evalforge calibrate`" in historical_calibration
     assert (
         f"[Unreleased]: https://github.com/ownasquare/evalforge/compare/v{__version__}...HEAD"
         in changelog
@@ -123,8 +129,12 @@ def test_public_docs_reference_the_current_supported_release() -> None:
         security_policy,
         flags=re.MULTILINE,
     )
+    assert "| `v0.2.x` | Unsupported |" in security_policy
     assert "| `v0.1.x` | Unsupported |" in security_policy
     assert "| `main` | Supported development version |" in security_policy
+    expected_placeholder = f"placeholder: {__version__} or commit identifier"
+    assert expected_placeholder in BUG_REPORT.read_text(encoding="utf-8")
+    assert expected_placeholder in QUESTION_FORM.read_text(encoding="utf-8")
 
 
 def test_ci_and_release_actions_use_only_exact_approved_sha_pins() -> None:
@@ -193,6 +203,12 @@ def test_versioned_release_notes_preserve_the_public_beta_boundary() -> None:
     assert "permanently offline workflow" in notes
     assert "JSON or CSV human-label" in notes
     assert "evalforge calibrate" in notes
+    assert "Viewers can download a run-linked CSV template" in notes
+    assert "Editors can import completed CSV or JSON labels" in notes
+    assert "API clients may request CSV or JSON" in notes
+    assert "without storing raw labels, result" in notes
+    assert "or reviewer IDs" in notes
+    assert re.search(r"Re-importing the same manifest\s+and threshold", notes)
     assert re.search(r"`production_validated(?::\s*|=)false`", notes)
     assert "not evidence of real human review" in notes
     assert "contact a model provider" in notes

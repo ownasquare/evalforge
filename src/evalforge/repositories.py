@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer, selectinload
 
 from evalforge.models import (
+    CalibrationReport,
     Dataset,
     EvaluationResult,
     EvaluationRun,
@@ -28,6 +29,7 @@ from evalforge.models import (
     TestCase,
     canonical_json_hash,
     utc_now,
+    validate_calibration_report_integrity,
 )
 from evalforge.schemas import (
     DatasetCreate,
@@ -956,6 +958,128 @@ class SystemEvaluationRunRepository(EvaluationRunRepository):
         self.context = None
 
 
+class CalibrationReportRepository(BaseRepository):
+    """Workspace-scoped append-only access to minimized calibration reports."""
+
+    def get(self, run_id: str, report_id: str) -> CalibrationReport:
+        report = self.session.scalar(
+            select(CalibrationReport).where(
+                CalibrationReport.id == report_id,
+                CalibrationReport.run_id == run_id,
+                *self._scope(CalibrationReport),
+            )
+        )
+        if report is None:
+            raise NotFoundError(f"calibration report {report_id} was not found")
+        return report
+
+    def list(
+        self,
+        run_id: str,
+        *,
+        page: int = 1,
+        limit: int = 50,
+        candidate_id: str | None = None,
+        metric_name: str | None = None,
+    ) -> tuple[list_type[CalibrationReport], int]:
+        if page < 1 or not 1 <= limit <= 100:
+            raise ValidationError("calibration report pagination is invalid")
+        run = self.session.scalar(
+            select(EvaluationRun.id).where(
+                EvaluationRun.id == run_id,
+                *self._scope(EvaluationRun),
+            )
+        )
+        if run is None:
+            raise NotFoundError(f"evaluation run {run_id} was not found")
+        filters: list_type[Any] = [
+            CalibrationReport.run_id == run_id,
+            *self._scope(CalibrationReport),
+        ]
+        if candidate_id is not None:
+            filters.append(CalibrationReport.run_candidate_id == candidate_id)
+        if metric_name is not None:
+            filters.append(CalibrationReport.metric_name == metric_name)
+        total = (
+            self.session.scalar(select(func.count()).select_from(CalibrationReport).where(*filters))
+            or 0
+        )
+        rows = self.session.scalars(
+            select(CalibrationReport)
+            .where(*filters)
+            .order_by(CalibrationReport.created_at.desc(), CalibrationReport.id.desc())
+            .offset((page - 1) * limit)
+            .limit(limit)
+        ).all()
+        return list(rows), total
+
+    def find_idempotent(
+        self,
+        *,
+        run_id: str,
+        candidate_id: str,
+        metric_name: str,
+        manifest_sha256: str,
+        selected_threshold: float,
+    ) -> CalibrationReport | None:
+        return self.session.scalar(
+            select(CalibrationReport).where(
+                CalibrationReport.run_id == run_id,
+                CalibrationReport.run_candidate_id == candidate_id,
+                CalibrationReport.metric_name == metric_name,
+                CalibrationReport.manifest_sha256 == manifest_sha256,
+                CalibrationReport.selected_threshold == selected_threshold,
+                *self._scope(CalibrationReport),
+            )
+        )
+
+    def create_idempotent(
+        self,
+        report: CalibrationReport,
+    ) -> tuple[CalibrationReport, bool]:
+        if not isinstance(report, CalibrationReport):
+            raise TypeError("report must be a CalibrationReport")
+        try:
+            validate_calibration_report_integrity(report)
+        except ValueError:
+            raise ValidationError("calibration report failed integrity validation") from None
+        report.workspace_id = self.workspace_id
+        existing = self.find_idempotent(
+            run_id=report.run_id,
+            candidate_id=report.run_candidate_id,
+            metric_name=report.metric_name,
+            manifest_sha256=report.manifest_sha256,
+            selected_threshold=report.selected_threshold,
+        )
+        if existing is not None:
+            try:
+                validate_calibration_report_integrity(existing)
+            except ValueError:
+                raise ValidationError(
+                    "stored calibration report failed integrity validation"
+                ) from None
+            if existing.report_sha256 != report.report_sha256:
+                raise ConflictError("calibration report conflicts with existing evidence")
+            return existing, False
+
+        try:
+            with self.session.begin_nested():
+                self.session.add(report)
+                self.session.flush()
+        except IntegrityError as exc:
+            existing = self.find_idempotent(
+                run_id=report.run_id,
+                candidate_id=report.run_candidate_id,
+                metric_name=report.metric_name,
+                manifest_sha256=report.manifest_sha256,
+                selected_threshold=report.selected_threshold,
+            )
+            if existing is not None and existing.report_sha256 == report.report_sha256:
+                return existing, False
+            raise ConflictError("calibration report conflicts with existing evidence") from exc
+        return report, True
+
+
 class Repositories:
     """Convenience bundle sharing one caller-owned Session."""
 
@@ -964,3 +1088,4 @@ class Repositories:
         self.prompts = PromptTemplateRepository(session, context)
         self.models = ModelProfileRepository(session, context)
         self.runs = EvaluationRunRepository(session, context)
+        self.calibrations = CalibrationReportRepository(session, context)

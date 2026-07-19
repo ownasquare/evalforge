@@ -13,7 +13,16 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from evalforge import __version__
-from evalforge.api.routes import analytics, datasets, health, models, prompts, runs, session
+from evalforge.api.routes import (
+    analytics,
+    calibrations,
+    datasets,
+    health,
+    models,
+    prompts,
+    runs,
+    session,
+)
 from evalforge.config import Settings, get_settings
 from evalforge.container import AppContainer, build_container
 from evalforge.errors import EvalForgeError
@@ -120,7 +129,13 @@ def create_app(
             "X-EvalForge-Workspace-ID",
             "X-Request-ID",
         ],
-        expose_headers=["Location", "X-Request-ID"],
+        expose_headers=[
+            "Content-Disposition",
+            "Location",
+            "X-EvalForge-Payload-SHA256",
+            "X-EvalForge-Sample-Size",
+            "X-Request-ID",
+        ],
     )
     application.add_middleware(
         TrustedHostMiddleware,
@@ -191,6 +206,7 @@ def create_app(
     application.include_router(prompts.router, prefix="/api/v1")
     application.include_router(models.router, prefix="/api/v1")
     application.include_router(runs.router, prefix="/api/v1")
+    application.include_router(calibrations.router, prefix="/api/v1")
     application.include_router(analytics.router, prefix="/api/v1")
 
     @application.get("/", include_in_schema=False)

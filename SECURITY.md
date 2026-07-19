@@ -18,7 +18,8 @@ attaching logs or exports.
 
 | Version | Support status |
 | --- | --- |
-| `v0.2.0` | Supported public beta |
+| `v0.3.0` | Supported public beta |
+| `v0.2.x` | Unsupported |
 | `v0.1.x` | Unsupported |
 | `main` | Supported development version |
 

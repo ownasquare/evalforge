@@ -34,7 +34,7 @@ class CalibrationLabel:
         if not isinstance(self.human_passed, bool):
             raise ValueError("human_passed must be a boolean")
         object.__setattr__(self, "item_id", normalized_id)
-        object.__setattr__(self, "score", normalized_score)
+        object.__setattr__(self, "score", 0.0 if normalized_score == 0.0 else normalized_score)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +129,7 @@ def evaluate_threshold(
     threshold = float(selected_threshold)
     if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
         raise ValueError("selected_threshold must be a finite number between 0 and 1")
+    threshold = 0.0 if threshold == 0.0 else threshold
     resolved_direction = MetricDirection(direction)
     rows = _normalized_labels(labels)
 

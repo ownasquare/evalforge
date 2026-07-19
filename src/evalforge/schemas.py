@@ -673,6 +673,61 @@ class EvaluationResultRead(StrictSchema):
     updated_at: datetime
 
 
+class CalibrationDatasetIdentityRead(StrictSchema):
+    id: str = Field(min_length=1, max_length=128)
+    version: str = Field(min_length=1, max_length=128)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CalibrationMetricIdentityRead(StrictSchema):
+    name: str = Field(min_length=1, max_length=128)
+    version: str = Field(min_length=1, max_length=128)
+    direction: MetricDirection
+
+
+class CalibrationConfusionMatrixRead(StrictSchema):
+    true_positive: int = Field(ge=0)
+    true_negative: int = Field(ge=0)
+    false_positive: int = Field(ge=0)
+    false_negative: int = Field(ge=0)
+
+
+class CalibrationReportRead(StrictSchema):
+    """Content-minimized immutable calibration evidence."""
+
+    id: UUID
+    run_id: UUID
+    candidate_id: UUID
+    dataset: CalibrationDatasetIdentityRead
+    metric: CalibrationMetricIdentityRead
+    selected_threshold: float = Field(ge=0, le=1)
+    label_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_kind: Literal["offline_statistical_evidence"]
+    production_validated: Literal[False]
+    sample_size: int = Field(ge=1)
+    human_pass_count: int = Field(ge=0)
+    human_fail_count: int = Field(ge=0)
+    reviewer_count: int = Field(ge=1)
+    precision: float = Field(ge=0, le=1)
+    recall: float = Field(ge=0, le=1)
+    f1: float = Field(ge=0, le=1)
+    confusion_matrix: CalibrationConfusionMatrixRead
+    created_at: datetime
+
+
+class CalibrationImportRead(StrictSchema):
+    status: Literal["created", "already_exists"]
+    report: CalibrationReportRead
+
+
+class CalibrationReportPage(StrictSchema):
+    items: list[CalibrationReportRead]
+    total: int = Field(ge=0)
+    page: int = Field(ge=1)
+    limit: int = Field(ge=1, le=100)
+
+
 class EvaluationRunRead(StrictSchema):
     id: UUID
     workspace_id: UUID

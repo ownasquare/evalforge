@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -702,6 +703,11 @@ class EvaluationRun(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, B
         primaryjoin="EvaluationRun.id == ExecutionAttempt.run_id",
         foreign_keys="ExecutionAttempt.run_id",
     )
+    calibration_reports: Mapped[list[CalibrationReport]] = relationship(
+        back_populates="run",
+        primaryjoin="EvaluationRun.id == CalibrationReport.run_id",
+        foreign_keys="CalibrationReport.run_id",
+    )
 
     def transition_to(
         self,
@@ -767,6 +773,13 @@ class RunCandidate(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Ba
         CheckConstraint("failed_items >= 0", name="ck_run_candidates_failed_nonnegative"),
         CheckConstraint(
             "completed_items <= total_items", name="ck_run_candidates_completed_within_total"
+        ),
+        Index(
+            "ux_run_candidates_workspace_run_id",
+            "workspace_id",
+            "run_id",
+            "id",
+            unique=True,
         ),
         Index("ix_run_candidates_workspace_run_status", "workspace_id", "run_id", "status"),
     )
@@ -839,6 +852,11 @@ class RunCandidate(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Ba
         passive_deletes=True,
         primaryjoin="RunCandidate.id == EvaluationResult.run_candidate_id",
         foreign_keys="EvaluationResult.run_candidate_id",
+    )
+    calibration_reports: Mapped[list[CalibrationReport]] = relationship(
+        back_populates="candidate",
+        primaryjoin="RunCandidate.id == CalibrationReport.run_candidate_id",
+        foreign_keys="CalibrationReport.run_candidate_id",
     )
 
     def transition_to(
@@ -1050,6 +1068,274 @@ class EvaluationResult(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin
             self.finished_at = changed_at
 
 
+class CalibrationReport(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Base):
+    """Immutable, content-minimized human-calibration evidence for one run candidate."""
+
+    __tablename__ = "calibration_reports"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_calibration_reports_workspace_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "run_id",
+            "run_candidate_id",
+            "report_sha256",
+            name="uq_calibration_reports_workspace_report_hash",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "run_id",
+            "run_candidate_id",
+            "metric_name",
+            "manifest_sha256",
+            "selected_threshold",
+            name="uq_calibration_reports_idempotency",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "run_id"],
+            ["evaluation_runs.workspace_id", "evaluation_runs.id"],
+            name="fk_calibration_reports_workspace_run",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "run_candidate_id"],
+            ["run_candidates.workspace_id", "run_candidates.id"],
+            name="fk_calibration_reports_workspace_candidate",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "run_id", "run_candidate_id"],
+            ["run_candidates.workspace_id", "run_candidates.run_id", "run_candidates.id"],
+            name="fk_calibration_reports_workspace_run_candidate",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "selected_threshold >= 0 AND selected_threshold <= 1",
+            name="ck_calibration_reports_threshold_unit_interval",
+        ),
+        CheckConstraint(
+            "metric_direction IN ('higher_is_better', 'lower_is_better')",
+            name="ck_calibration_reports_metric_direction",
+        ),
+        CheckConstraint(
+            "schema_version = 'evalforge.calibration-report.v1'",
+            name="ck_calibration_reports_schema_version",
+        ),
+        CheckConstraint(
+            "evidence_kind = 'offline_statistical_evidence'",
+            name="ck_calibration_reports_evidence_kind",
+        ),
+        CheckConstraint(
+            "production_validated = false",
+            name="ck_calibration_reports_not_production_validated",
+        ),
+        CheckConstraint(
+            "length(manifest_sha256) = 64 AND manifest_sha256 = lower(manifest_sha256)",
+            name="ck_calibration_reports_manifest_hash",
+        ),
+        CheckConstraint(
+            "length(report_sha256) = 64 AND report_sha256 = lower(report_sha256)",
+            name="ck_calibration_reports_report_hash",
+        ),
+        CheckConstraint("sample_size > 0", name="ck_calibration_reports_sample_positive"),
+        CheckConstraint(
+            "human_pass_count >= 0 AND human_fail_count >= 0",
+            name="ck_calibration_reports_human_counts_nonnegative",
+        ),
+        CheckConstraint(
+            "human_pass_count + human_fail_count = sample_size",
+            name="ck_calibration_reports_human_counts_total",
+        ),
+        CheckConstraint("reviewer_count > 0", name="ck_calibration_reports_reviewer_positive"),
+        CheckConstraint(
+            "reviewer_count <= sample_size",
+            name="ck_calibration_reports_reviewer_within_sample",
+        ),
+        CheckConstraint(
+            "precision >= 0 AND precision <= 1",
+            name="ck_calibration_reports_precision_unit_interval",
+        ),
+        CheckConstraint(
+            "recall >= 0 AND recall <= 1",
+            name="ck_calibration_reports_recall_unit_interval",
+        ),
+        CheckConstraint("f1 >= 0 AND f1 <= 1", name="ck_calibration_reports_f1_unit_interval"),
+        Index(
+            "ix_calibration_reports_workspace_run_created",
+            "workspace_id",
+            "run_id",
+            "created_at",
+        ),
+        Index(
+            "ix_calibration_reports_workspace_candidate_metric",
+            "workspace_id",
+            "run_candidate_id",
+            "metric_name",
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("evaluation_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    run_candidate_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("run_candidates.id", ondelete="RESTRICT"), nullable=False
+    )
+    metric_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_direction: Mapped[str] = mapped_column(String(32), nullable=False)
+    selected_threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    production_validated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    human_pass_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    human_fail_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    reviewer_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    precision: Mapped[float] = mapped_column(Float, nullable=False)
+    recall: Mapped[float] = mapped_column(Float, nullable=False)
+    f1: Mapped[float] = mapped_column(Float, nullable=False)
+    report_payload: Mapped[JSONDict] = mapped_column(MutableDict.as_mutable(JSON), nullable=False)
+    created_by_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+
+    run: Mapped[EvaluationRun] = relationship(
+        back_populates="calibration_reports",
+        primaryjoin="EvaluationRun.id == CalibrationReport.run_id",
+        foreign_keys=[run_id],
+    )
+    candidate: Mapped[RunCandidate] = relationship(
+        back_populates="calibration_reports",
+        primaryjoin="RunCandidate.id == CalibrationReport.run_candidate_id",
+        foreign_keys=[run_candidate_id],
+    )
+
+
+class CalibrationReportIntegrityError(ValueError):
+    """Raised when minimized calibration evidence and its hash disagree."""
+
+
+def validate_calibration_report_integrity(report: CalibrationReport) -> None:
+    """Verify the canonical payload, mirrored columns, privacy shape, and derived rates."""
+
+    if not isinstance(report, CalibrationReport):
+        raise TypeError("report must be a CalibrationReport")
+    payload = report.report_payload
+    expected_keys = {
+        "calibration_set_sha256",
+        "confusion_matrix",
+        "dataset",
+        "evidence_kind",
+        "f1",
+        "human_fail_count",
+        "human_pass_count",
+        "label_manifest_sha256",
+        "metric",
+        "precision",
+        "production_validated",
+        "recall",
+        "reviewer_count",
+        "sample_size",
+        "schema_version",
+        "selected_threshold",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        raise CalibrationReportIntegrityError("calibration report payload shape is invalid")
+    dataset = payload.get("dataset")
+    metric = payload.get("metric")
+    confusion = payload.get("confusion_matrix")
+    if (
+        not isinstance(dataset, dict)
+        or set(dataset) != {"id", "version", "sha256"}
+        or not isinstance(metric, dict)
+        or set(metric) != {"name", "version", "direction"}
+        or not isinstance(confusion, dict)
+        or set(confusion) != {"false_negative", "false_positive", "true_negative", "true_positive"}
+    ):
+        raise CalibrationReportIntegrityError("calibration report evidence shape is invalid")
+
+    mirrored = {
+        "evidence_kind": report.evidence_kind,
+        "f1": report.f1,
+        "human_fail_count": report.human_fail_count,
+        "human_pass_count": report.human_pass_count,
+        "label_manifest_sha256": report.manifest_sha256,
+        "precision": report.precision,
+        "production_validated": report.production_validated,
+        "recall": report.recall,
+        "reviewer_count": report.reviewer_count,
+        "sample_size": report.sample_size,
+        "schema_version": report.schema_version,
+        "selected_threshold": report.selected_threshold,
+    }
+    if any(payload.get(field) != value for field, value in mirrored.items()):
+        raise CalibrationReportIntegrityError("calibration report columns do not match payload")
+    if metric != {
+        "name": report.metric_name,
+        "version": report.metric_version,
+        "direction": report.metric_direction,
+    }:
+        raise CalibrationReportIntegrityError("calibration report metric does not match payload")
+
+    hash_values = (
+        report.manifest_sha256,
+        report.report_sha256,
+        payload.get("calibration_set_sha256"),
+        dataset.get("sha256"),
+    )
+    if any(
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+        for value in hash_values
+    ):
+        raise CalibrationReportIntegrityError("calibration report hashes are invalid")
+    try:
+        calculated_hash = canonical_json_hash(payload)
+    except (TypeError, ValueError):
+        raise CalibrationReportIntegrityError(
+            "calibration report payload is not canonical JSON"
+        ) from None
+    if calculated_hash != report.report_sha256:
+        raise CalibrationReportIntegrityError("calibration report payload hash does not match")
+
+    counts = tuple(confusion.values())
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
+        raise CalibrationReportIntegrityError("calibration report confusion matrix is invalid")
+    true_positive = confusion["true_positive"]
+    true_negative = confusion["true_negative"]
+    false_positive = confusion["false_positive"]
+    false_negative = confusion["false_negative"]
+    if (
+        sum(counts) != report.sample_size
+        or true_positive + false_negative != report.human_pass_count
+        or true_negative + false_positive != report.human_fail_count
+        or report.reviewer_count > report.sample_size
+    ):
+        raise CalibrationReportIntegrityError("calibration report counts are inconsistent")
+    precision = _calibration_ratio(true_positive, true_positive + false_positive)
+    recall = _calibration_ratio(true_positive, true_positive + false_negative)
+    f1 = _calibration_ratio(2.0 * precision * recall, precision + recall)
+    if not all(
+        math.isclose(observed, expected, rel_tol=0.0, abs_tol=1e-12)
+        for observed, expected in (
+            (report.precision, precision),
+            (report.recall, recall),
+            (report.f1, f1),
+        )
+    ):
+        raise CalibrationReportIntegrityError("calibration report rates are inconsistent")
+
+
+def _calibration_ratio(numerator: float, denominator: float) -> float:
+    """Match the stable six-decimal calibration report representation."""
+
+    if denominator == 0:
+        return 0.0
+    return round(numerator / denominator, 6)
+
+
 class ExecutionAttempt(WorkspaceScopedMixin, UuidPrimaryKeyMixin, TimestampMixin, Base):
     """One immutable-identity lease epoch with mutable liveness and outcome fields."""
 
@@ -1194,8 +1480,18 @@ def _reject_audit_mutation(_mapper: Any, _connection: Any, _target: AuditEvent) 
     raise ImmutableProvenanceError("audit events are append-only")
 
 
+def _reject_calibration_mutation(
+    _mapper: Any,
+    _connection: Any,
+    _target: CalibrationReport,
+) -> None:
+    raise ImmutableProvenanceError("calibration reports are append-only")
+
+
 for _model in _IMMUTABLE_PROVENANCE_FIELDS:
     event.listen(_model, "before_update", _reject_provenance_update)
 
 event.listen(AuditEvent, "before_update", _reject_audit_mutation)
 event.listen(AuditEvent, "before_delete", _reject_audit_mutation)
+event.listen(CalibrationReport, "before_update", _reject_calibration_mutation)
+event.listen(CalibrationReport, "before_delete", _reject_calibration_mutation)

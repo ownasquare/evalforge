@@ -1,0 +1,54 @@
+name: Question
+description: Ask for help using, installing, or extending EvalForge
+title: "[Question]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions are welcome. Remove API keys, access tokens, private prompts, benchmark content,
+        model responses, database files, and unredacted evidence before submitting.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the documentation and searched existing issues.
+          required: true
+        - label: I removed credentials and private evaluation data.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: What do you need help with?
+      options:
+        - Installing or starting EvalForge
+        - Running an evaluation
+        - Understanding results or metrics
+        - Importing a benchmark
+        - Human calibration
+        - Configuring a model provider
+        - Extending the source
+        - Shared workspace or deployment setup
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Tell us what you are trying to accomplish and where you became unsure.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: 0.3.0 or commit identifier
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Python version, database, and browser when relevant.
+      placeholder: macOS, Python 3.12, SQLite, Chromium

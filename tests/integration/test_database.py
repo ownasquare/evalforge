@@ -17,25 +17,34 @@ from sqlalchemy.orm.exc import StaleDataError
 from evalforge.config import Settings, get_settings
 from evalforge.container import apply_migrations
 from evalforge.database import (
+    EXPECTED_SCHEMA_REVISION,
     Base,
     SessionFactory,
     check_database_connectivity,
     check_database_readiness,
+    create_session_factory,
+    session_scope,
 )
 from evalforge.models import (
+    CalibrationReport,
     EvaluationResult,
+    EvaluationRun,
     ImmutableProvenanceError,
     InvalidStateTransition,
     ResultStatus,
     RunStatus,
+    canonical_json_hash,
+    validate_calibration_report_integrity,
 )
 from evalforge.models import TestCase as DomainTestCase
 from evalforge.repositories import (
+    CalibrationReportRepository,
     ConflictError,
     DatasetRepository,
     EvaluationRunRepository,
     ModelProfileRepository,
     PromptTemplateRepository,
+    Repositories,
 )
 from evalforge.repositories import (
     ValidationError as RepositoryValidationError,
@@ -49,9 +58,69 @@ from evalforge.schemas import (
     PromptTemplateUpdate,
 )
 from evalforge.schemas import TestCaseCreate as CaseCreateSchema
-from evalforge.security.permissions import WorkspaceContext
+from evalforge.security.permissions import WorkspaceContext, local_workspace_context
+from evalforge.seed import seed_demo
 
 ROOT = Path(__file__).parents[2]
+
+
+def test_schema_revision_fits_alembic_default_version_column() -> None:
+    assert len(EXPECTED_SCHEMA_REVISION) <= 32
+
+
+def test_calibration_integrity_accepts_stable_six_decimal_rates() -> None:
+    payload = {
+        "calibration_set_sha256": "a" * 64,
+        "confusion_matrix": {
+            "false_negative": 0,
+            "false_positive": 1,
+            "true_negative": 0,
+            "true_positive": 2,
+        },
+        "dataset": {"id": "dataset", "version": "1", "sha256": "b" * 64},
+        "evidence_kind": "offline_statistical_evidence",
+        "f1": 0.8,
+        "human_fail_count": 1,
+        "human_pass_count": 2,
+        "label_manifest_sha256": "c" * 64,
+        "metric": {
+            "name": "correctness",
+            "version": "1",
+            "direction": "higher_is_better",
+        },
+        "precision": 0.666667,
+        "production_validated": False,
+        "recall": 1.0,
+        "reviewer_count": 1,
+        "sample_size": 3,
+        "schema_version": "evalforge.calibration-report.v1",
+        "selected_threshold": 0.5,
+    }
+    report = CalibrationReport(
+        workspace_id="00000000-0000-4000-8000-000000000001",
+        run_id="00000000-0000-4000-8000-000000000010",
+        run_candidate_id="00000000-0000-4000-8000-000000000011",
+        metric_name="correctness",
+        metric_version="1",
+        metric_direction="higher_is_better",
+        selected_threshold=0.5,
+        manifest_sha256="c" * 64,
+        report_sha256=canonical_json_hash(payload),
+        schema_version="evalforge.calibration-report.v1",
+        evidence_kind="offline_statistical_evidence",
+        production_validated=False,
+        sample_size=3,
+        human_pass_count=2,
+        human_fail_count=1,
+        reviewer_count=1,
+        precision=0.666667,
+        recall=1.0,
+        f1=0.8,
+        report_payload=payload,
+        created_by_user_id="00000000-0000-4000-8000-000000000002",
+    )
+
+    validate_calibration_report_integrity(report)
 
 
 @pytest.mark.integration
@@ -151,6 +220,171 @@ def test_result_metrics_finalize_once_then_become_immutable(
 
     sample_result.metric_results = {"correctness": {"score": 0.0}}
     with pytest.raises(ImmutableProvenanceError, match="metric_results"):
+        session.commit()
+    session.rollback()
+
+
+@pytest.mark.integration
+def test_calibration_reports_are_scoped_append_only_idempotent_and_paginated(
+    session: Session,
+    sample_result: EvaluationResult,
+    workspace_context: WorkspaceContext,
+) -> None:
+    session.add(sample_result)
+    session.commit()
+    repository = CalibrationReportRepository(session, workspace_context)
+
+    def report(*, threshold: float, digest: str) -> CalibrationReport:
+        payload = {
+            "calibration_set_sha256": digest * 64,
+            "confusion_matrix": {
+                "false_negative": 0,
+                "false_positive": 0,
+                "true_negative": 0,
+                "true_positive": 1,
+            },
+            "dataset": {"id": "dataset", "version": "1", "sha256": "f" * 64},
+            "evidence_kind": "offline_statistical_evidence",
+            "f1": 1.0,
+            "human_fail_count": 0,
+            "human_pass_count": 1,
+            "label_manifest_sha256": "a" * 64,
+            "metric": {
+                "name": "correctness",
+                "version": "1.0.0",
+                "direction": "higher_is_better",
+            },
+            "precision": 1.0,
+            "production_validated": False,
+            "recall": 1.0,
+            "reviewer_count": 1,
+            "sample_size": 1,
+            "schema_version": "evalforge.calibration-report.v1",
+            "selected_threshold": threshold,
+        }
+        return CalibrationReport(
+            workspace_id=workspace_context.workspace_id,
+            run_id=sample_result.run_id,
+            run_candidate_id=sample_result.run_candidate_id,
+            metric_name="correctness",
+            metric_version="1.0.0",
+            metric_direction="higher_is_better",
+            selected_threshold=threshold,
+            manifest_sha256="a" * 64,
+            report_sha256=canonical_json_hash(payload),
+            schema_version="evalforge.calibration-report.v1",
+            evidence_kind="offline_statistical_evidence",
+            production_validated=False,
+            sample_size=1,
+            human_pass_count=1,
+            human_fail_count=0,
+            reviewer_count=1,
+            precision=1.0,
+            recall=1.0,
+            f1=1.0,
+            report_payload=payload,
+            created_by_user_id=workspace_context.user_id,
+        )
+
+    first, first_created = repository.create_idempotent(report(threshold=0.5, digest="b"))
+    replay, replay_created = repository.create_idempotent(report(threshold=0.5, digest="b"))
+    _second, second_created = repository.create_idempotent(report(threshold=0.6, digest="c"))
+    session.commit()
+
+    assert first_created is True
+    assert replay_created is False
+    assert second_created is True
+    assert replay.id == first.id
+    rows, total = repository.list(sample_result.run_id, page=1, limit=1)
+    assert total == 2
+    assert len(rows) == 1
+    assert repository.list(sample_result.run_id, page=2, limit=1)[1] == 2
+    assert repository.get(sample_result.run_id, first.id).id == first.id
+
+    invalid = report(threshold=0.7, digest="d")
+    invalid.report_sha256 = "e" * 64
+    with pytest.raises(RepositoryValidationError, match="integrity"):
+        repository.create_idempotent(invalid)
+
+    foreign_run = EvaluationRun(
+        workspace_id=workspace_context.workspace_id,
+        dataset_id=sample_result.run.dataset_id,
+        dataset_snapshot=dict(sample_result.run.dataset_snapshot),
+        dataset_hash=sample_result.run.dataset_hash,
+        metric_configuration_snapshot=dict(sample_result.run.metric_configuration_snapshot),
+        application_version="test",
+        executor_type="in_process",
+        requested_by_user_id=workspace_context.user_id,
+        requested_by=workspace_context.display_name,
+        status=RunStatus.COMPLETED,
+        total_items=0,
+    )
+    session.add(foreign_run)
+    session.commit()
+    cross_run = report(threshold=0.8, digest="e")
+    cross_run.run_id = foreign_run.id
+    session.add(cross_run)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+    first.precision = 0.5
+    with pytest.raises(ImmutableProvenanceError, match="append-only"):
+        session.commit()
+    session.rollback()
+    persisted = repository.get(sample_result.run_id, first.id)
+    session.delete(persisted)
+    with pytest.raises(ImmutableProvenanceError, match="append-only"):
+        session.commit()
+    session.rollback()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("evidence_kind", "production_validation"),
+        ("production_validated", True),
+        ("metric_direction", "sideways"),
+        ("reviewer_count", 2),
+    ],
+)
+def test_calibration_database_rejects_misleading_evidence_claims(
+    session: Session,
+    sample_result: EvaluationResult,
+    workspace_context: WorkspaceContext,
+    field: str,
+    invalid_value: object,
+) -> None:
+    session.add(sample_result)
+    session.commit()
+    values = {
+        "workspace_id": workspace_context.workspace_id,
+        "run_id": sample_result.run_id,
+        "run_candidate_id": sample_result.run_candidate_id,
+        "metric_name": "correctness",
+        "metric_version": "1.0.0",
+        "metric_direction": "higher_is_better",
+        "selected_threshold": 0.5,
+        "manifest_sha256": "a" * 64,
+        "report_sha256": "b" * 64,
+        "schema_version": "evalforge.calibration-report.v1",
+        "evidence_kind": "offline_statistical_evidence",
+        "production_validated": False,
+        "sample_size": 1,
+        "human_pass_count": 1,
+        "human_fail_count": 0,
+        "reviewer_count": 1,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "report_payload": {},
+        "created_by_user_id": workspace_context.user_id,
+    }
+    values[field] = invalid_value
+    session.add(CalibrationReport(**values))
+
+    with pytest.raises(IntegrityError):
         session.commit()
     session.rollback()
 
@@ -447,6 +681,81 @@ def test_second_migration_upgrades_an_existing_first_revision(
         case_columns = {column["name"] for column in inspect(engine).get_columns("test_cases")}
         assert {"preflight_snapshot", "acknowledge_unknown_cost"} <= run_columns
         assert "context_chunks" in case_columns
+        assert check_database_readiness(engine) is True
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.integration
+def test_calibration_migration_upgrades_from_0004_and_refuses_evidence_loss(
+    tmp_path: Path,
+) -> None:
+    from evalforge.database import create_database_engine
+
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'upgrade-from-0004.db'}"
+    configuration = Config()
+    configuration.set_main_option("script_location", str(ROOT / "src" / "evalforge" / "migrations"))
+    configuration.attributes["database_url"] = database_url
+    command.upgrade(configuration, "0004_durable_execution_leases")
+    engine = create_database_engine(database_url)
+    try:
+        assert "calibration_reports" not in inspect(engine).get_table_names()
+        assert check_database_readiness(engine) is False
+    finally:
+        engine.dispose()
+
+    command.upgrade(configuration, "head")
+    engine = create_database_engine(database_url)
+    try:
+        context = local_workspace_context()
+        with session_scope(create_session_factory(engine)) as migration_session:
+            seed_demo(migration_session, context)
+            repositories = Repositories(migration_session, context)
+            datasets, _ = repositories.datasets.list(limit=1)
+            prompts, _ = repositories.prompts.list(limit=1)
+            models, _ = repositories.models.list(limit=1)
+            run = repositories.runs.create(
+                EvaluationRunCreate(
+                    dataset_id=UUID(datasets[0].id),
+                    prompt_ids=[UUID(prompts[0].id)],
+                    model_ids=[UUID(models[0].id)],
+                ),
+                application_version="migration-test",
+            )
+            migration_session.add(
+                CalibrationReport(
+                    workspace_id=context.workspace_id,
+                    run_id=run.id,
+                    run_candidate_id=run.candidates[0].id,
+                    metric_name="correctness",
+                    metric_version="1.0.0",
+                    metric_direction="higher_is_better",
+                    selected_threshold=0.5,
+                    manifest_sha256="a" * 64,
+                    report_sha256="b" * 64,
+                    schema_version="evalforge.calibration-report.v1",
+                    evidence_kind="offline_statistical_evidence",
+                    production_validated=False,
+                    sample_size=1,
+                    human_pass_count=1,
+                    human_fail_count=0,
+                    reviewer_count=1,
+                    precision=1.0,
+                    recall=1.0,
+                    f1=1.0,
+                    report_payload={},
+                    created_by_user_id=context.user_id,
+                )
+            )
+        assert check_database_readiness(engine) is True
+    finally:
+        engine.dispose()
+
+    with pytest.raises(RuntimeError, match="downgrade refused"):
+        command.downgrade(configuration, "0004_durable_execution_leases")
+    engine = create_database_engine(database_url)
+    try:
+        assert "calibration_reports" in inspect(engine).get_table_names()
         assert check_database_readiness(engine) is True
     finally:
         engine.dispose()

@@ -10,7 +10,8 @@
 
 ## Ask a question or report a bug
 
-Use the repository issue templates. Search existing issues first, choose the closest template, and
+Use the repository's **Question**, **Bug report**, or **Feature request** template. Search existing
+issues first, choose the closest template, and
 include:
 
 - what you were trying to do;

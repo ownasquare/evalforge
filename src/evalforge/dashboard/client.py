@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -318,6 +319,103 @@ class ApiClient:
     def run_comparison(self, run_id: str) -> JsonObject:
         return self._get_object(f"/api/v1/runs/{run_id}/comparison", cache_ttl=2.0)
 
+    def calibration_template(
+        self,
+        run_id: str,
+        *,
+        candidate_id: str,
+        metric_name: str,
+        template_format: str = "csv",
+    ) -> bytes:
+        """Download a server-derived human-label template for one stored score set."""
+
+        if template_format not in {"csv", "json"}:
+            raise ValueError("calibration template format must be csv or json")
+        candidate = _required_form_value(candidate_id, name="candidate_id")
+        metric = _required_form_value(metric_name, name="metric_name")
+        response = self._request_response(
+            "GET",
+            f"/api/v1/runs/{run_id}/calibrations/template",
+            params={
+                "candidate_id": candidate,
+                "metric_name": metric,
+                "format": template_format,
+            },
+        )
+        return response.content
+
+    def calibration_reports(
+        self,
+        run_id: str,
+        *,
+        candidate_id: str | None = None,
+        metric_name: str | None = None,
+        limit: int = 100,
+        page: int = 1,
+    ) -> JsonObject | list[Any]:
+        """List immutable calibration summaries for an evaluation run."""
+
+        params: dict[str, str | int] = {"limit": limit, "page": page}
+        if candidate_id is not None:
+            params["candidate_id"] = _required_form_value(candidate_id, name="candidate_id")
+        if metric_name is not None:
+            params["metric_name"] = _required_form_value(metric_name, name="metric_name")
+        return self._get_json(
+            f"/api/v1/runs/{run_id}/calibrations",
+            params=params,
+            cache_ttl=2.0,
+        )
+
+    def import_calibration(
+        self,
+        run_id: str,
+        *,
+        candidate_id: str,
+        metric_name: str,
+        selected_threshold: float,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> JsonObject:
+        """Upload labels once; mutation requests are intentionally never retried."""
+
+        candidate = _required_form_value(candidate_id, name="candidate_id")
+        metric = _required_form_value(metric_name, name="metric_name")
+        upload_name = _required_form_value(filename, name="filename")
+        upload_type = _required_form_value(content_type, name="content_type")
+        normalized_name = upload_name.lower()
+        if normalized_name.endswith(".json"):
+            file_format = "json"
+            expected_content_types = {"application/json"}
+        elif normalized_name.endswith(".csv"):
+            file_format = "csv"
+            expected_content_types = {"text/csv", "application/csv"}
+        else:
+            raise ValueError("calibration filename must end in .csv or .json")
+        if upload_type.split(";", 1)[0].strip().lower() not in expected_content_types:
+            raise ValueError("calibration content type does not match the filename")
+        if (
+            isinstance(selected_threshold, bool)
+            or not isinstance(selected_threshold, (int, float))
+            or not math.isfinite(float(selected_threshold))
+            or not 0.0 <= float(selected_threshold) <= 1.0
+        ):
+            raise ValueError("selected threshold must be a finite number between 0 and 1")
+        payload = self._request_json(
+            "POST",
+            f"/api/v1/runs/{run_id}/calibrations",
+            params={
+                "candidate_id": candidate,
+                "metric_name": metric,
+                "selected_threshold": str(float(selected_threshold)),
+                "format": file_format,
+            },
+            raw_content=content,
+            headers={"Content-Type": upload_type},
+        )
+        self.clear_cache()
+        return _expect_object(payload)
+
     def export_run(
         self,
         run_id: str,
@@ -420,6 +518,7 @@ class ApiClient:
         json_payload: Mapping[str, Any] | None = None,
         data: Mapping[str, str | None] | None = None,
         files: Mapping[str, tuple[str, bytes, str]] | None = None,
+        raw_content: bytes | None = None,
         headers: Mapping[str, str] | None = None,
         cache_ttl: float = 0.0,
     ) -> Any:
@@ -436,6 +535,7 @@ class ApiClient:
             json_payload=json_payload,
             data=data,
             files=files,
+            raw_content=raw_content,
             headers=headers,
         )
         if response.status_code == 204 or not response.content:
@@ -465,6 +565,7 @@ class ApiClient:
         json_payload: Mapping[str, Any] | None = None,
         data: Mapping[str, str | None] | None = None,
         files: Mapping[str, tuple[str, bytes, str]] | None = None,
+        raw_content: bytes | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
         read_only = method.upper() in {"GET", "HEAD"}
@@ -480,6 +581,7 @@ class ApiClient:
                     json=json_payload,
                     data=data,
                     files=files,
+                    content=raw_content,
                     headers=self._request_headers(headers),
                 )
             except httpx.TimeoutException:
@@ -623,6 +725,13 @@ def _expect_object(payload: Any) -> JsonObject:
     if not isinstance(payload, dict):
         raise ApiError("The API returned an unexpected response shape")
     return payload
+
+
+def _required_form_value(value: str, *, name: str) -> str:
+    candidate = value.strip()
+    if not candidate or len(candidate) > 512 or "\x00" in candidate:
+        raise ValueError(f"{name} has an invalid format")
+    return candidate
 
 
 def _request_id(response: httpx.Response, payload: Mapping[str, Any] | None = None) -> str | None:

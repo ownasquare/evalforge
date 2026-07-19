@@ -44,6 +44,8 @@ from evalforge.dashboard.pages.common import (
 from evalforge.dashboard.state import can_edit, navigate_to, select_run, selected_run_id
 
 _EVIDENCE_PAGE_SIZE = 50
+_MAX_CALIBRATION_UPLOAD_BYTES = 2 * 1024 * 1024
+_CALIBRATION_TEMPLATE_STATE_KEY = "_evalforge_run_export_calibration_template"
 
 
 def render() -> None:
@@ -110,6 +112,7 @@ def render() -> None:
     _render_result_conclusion(run, results)
     _render_run_actions(run, api)
     _render_analytics(run, results)
+    _render_human_calibration(run, results, api)
     _render_results(results, candidate_labels=_candidate_labels(run))
 
 
@@ -484,6 +487,491 @@ def _render_analytics(run: dict[str, Any], results: list[dict[str, Any]]) -> Non
         "interpreting whether a higher or lower value is better."
     )
     st.dataframe(pd.DataFrame(metric_rows), hide_index=True, width="stretch")
+
+
+def _render_human_calibration(
+    run: dict[str, Any],
+    results: list[dict[str, Any]],
+    api: Any,
+) -> None:
+    """Render an optional, progressively disclosed offline calibration workflow."""
+
+    run_id = resource_id(run)
+    status = str(first_value(run, "status", "state", default="unknown"))
+    with st.container(border=True):
+        st.markdown("### Human calibration")
+        st.caption(
+            "Optional human-review evidence, not production validation. Completed files are "
+            "sent to this EvalForge server for in-memory validation; raw labels and reviewer "
+            "identifiers are not stored."
+        )
+        if not run_id:
+            st.info("Run identity is unavailable, so calibration cannot be prepared.")
+            return
+        if not is_terminal_status(status):
+            st.info(
+                "Calibration becomes available after the evaluation finishes.",
+                icon=":material/schedule:",
+            )
+            return
+        if not st.toggle(
+            "Show calibration tools",
+            value=False,
+            key=f"_evalforge_run_export_calibration-open-{run_id}",
+            help="Loads the template and saved calibration history for this run.",
+        ):
+            return
+
+        candidates = _candidate_options(results, _candidate_labels(run))
+        if not candidates:
+            st.info(
+                "No completed candidate scores are available for calibration.",
+                icon=":material/info:",
+            )
+            return
+
+        candidate_column, metric_column = st.columns(2)
+        with candidate_column:
+            candidate_id = st.selectbox(
+                "Candidate",
+                options=list(candidates),
+                format_func=lambda value: candidates[value],
+                key=f"_evalforge_run_export_calibration-candidate-{run_id}",
+                help="Calibration always stays linked to one immutable run candidate.",
+            )
+
+        metric_options = _calibration_metric_options(run, results, candidate_id)
+        if not metric_options:
+            st.info(
+                "This candidate has no completed, applicable metric scores to calibrate.",
+                icon=":material/info:",
+            )
+            return
+        with metric_column:
+            metric_name = st.selectbox(
+                "Metric",
+                options=list(metric_options),
+                format_func=lambda value: (
+                    f"{_metric_label(value)} · "
+                    f"{_direction_label(metric_options[value].get('direction'))}"
+                ),
+                key=f"_evalforge_run_export_calibration-metric-{run_id}-{candidate_id}",
+                help="Only completed scores that can be verified against this run are listed.",
+            )
+
+        imported_report: dict[str, Any] | None = None
+        template_column, import_column = st.columns(2)
+        with template_column:
+            st.markdown("#### 1. Download the label template")
+            st.caption(
+                "Rows follow the case order shown below. Fill both human_passed and reviewer_id; "
+                "use an anonymous reviewer code, never a person's name."
+            )
+            template = _prepared_calibration_template(
+                run_id,
+                candidate_id=candidate_id,
+                metric_name=metric_name,
+            )
+            if template is None:
+                _prepare_calibration_template(
+                    api,
+                    run_id,
+                    candidate_id=candidate_id,
+                    metric_name=metric_name,
+                )
+                template = _prepared_calibration_template(
+                    run_id,
+                    candidate_id=candidate_id,
+                    metric_name=metric_name,
+                )
+            if template is not None:
+                st.download_button(
+                    "Download label template",
+                    data=template,
+                    file_name=(
+                        f"evalforge-{_filename_token(run_id)}-"
+                        f"{_filename_token(metric_name)}-labels.csv"
+                    ),
+                    mime="text/csv",
+                    key=(
+                        f"_evalforge_run_export_calibration-download-"
+                        f"{run_id}-{candidate_id}-{metric_name}"
+                    ),
+                    width="stretch",
+                )
+
+        with import_column:
+            st.markdown("#### 2. Import completed labels")
+            if not can_edit():
+                st.caption("Read-only access · Editors can import completed label files.")
+            else:
+                selected_threshold = st.number_input(
+                    "Threshold",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=_calibration_default_threshold(metric_options[metric_name]),
+                    step=0.01,
+                    format="%.3f",
+                    key=(
+                        f"_evalforge_run_export_calibration-threshold-"
+                        f"{run_id}-{candidate_id}-{metric_name}"
+                    ),
+                    help=(
+                        "The report measures how this threshold agrees with the uploaded human "
+                        "decisions. It does not change the evaluation configuration."
+                    ),
+                )
+                uploaded = st.file_uploader(
+                    "Completed CSV or JSON",
+                    type=["csv", "json"],
+                    accept_multiple_files=False,
+                    key=(
+                        f"_evalforge_run_export_calibration-upload-"
+                        f"{run_id}-{candidate_id}-{metric_name}"
+                    ),
+                    help=(
+                        "Maximum 2 MB. Raw labels and reviewer identifiers are validated in "
+                        "memory and are not stored in calibration reports."
+                    ),
+                )
+                upload_size = getattr(uploaded, "size", None)
+                oversized = isinstance(upload_size, int) and (
+                    upload_size > _MAX_CALIBRATION_UPLOAD_BYTES
+                )
+                if oversized:
+                    st.error("The calibration file exceeds the 2 MB dashboard limit.")
+                if st.button(
+                    "Import calibration",
+                    type="primary",
+                    icon=":material/upload_file:",
+                    disabled=uploaded is None or oversized,
+                    key=(
+                        f"_evalforge_run_export_calibration-import-"
+                        f"{run_id}-{candidate_id}-{metric_name}"
+                    ),
+                    width="stretch",
+                ):
+                    imported_report = _import_calibration(
+                        api,
+                        run_id,
+                        candidate_id=candidate_id,
+                        metric_name=metric_name,
+                        selected_threshold=float(selected_threshold),
+                        uploaded=uploaded,
+                    )
+
+        _render_calibration_history(
+            api,
+            run_id,
+            candidate_id=candidate_id,
+            candidate_label=candidates[candidate_id],
+            metric_name=metric_name,
+            imported_report=imported_report,
+        )
+
+
+def _prepare_calibration_template(
+    api: Any,
+    run_id: str,
+    *,
+    candidate_id: str,
+    metric_name: str,
+) -> None:
+    try:
+        data = api.calibration_template(
+            run_id,
+            candidate_id=candidate_id,
+            metric_name=metric_name,
+            template_format="csv",
+        )
+    except ApiError as error:
+        render_api_error(error, title="The calibration template could not be prepared")
+        return
+    st.session_state[_CALIBRATION_TEMPLATE_STATE_KEY] = {
+        "run_id": run_id,
+        "candidate_id": candidate_id,
+        "metric_name": metric_name,
+        "data": data,
+    }
+
+
+def _prepared_calibration_template(
+    run_id: str,
+    *,
+    candidate_id: str,
+    metric_name: str,
+) -> bytes | None:
+    value = st.session_state.get(_CALIBRATION_TEMPLATE_STATE_KEY)
+    if (
+        not isinstance(value, dict)
+        or value.get("run_id") != run_id
+        or value.get("candidate_id") != candidate_id
+        or value.get("metric_name") != metric_name
+    ):
+        return None
+    data = value.get("data")
+    return data if isinstance(data, bytes) else None
+
+
+def _import_calibration(
+    api: Any,
+    run_id: str,
+    *,
+    candidate_id: str,
+    metric_name: str,
+    selected_threshold: float,
+    uploaded: Any,
+) -> dict[str, Any] | None:
+    content = uploaded.getvalue()
+    if len(content) > _MAX_CALIBRATION_UPLOAD_BYTES:
+        st.error("The calibration file exceeds the 2 MB dashboard limit.")
+        return None
+    filename = str(getattr(uploaded, "name", "labels.csv"))
+    content_type = "application/json" if filename.lower().endswith(".json") else "text/csv"
+    try:
+        response = api.import_calibration(
+            run_id,
+            candidate_id=candidate_id,
+            metric_name=metric_name,
+            selected_threshold=selected_threshold,
+            filename=filename,
+            content=content,
+            content_type=content_type,
+        )
+    except ApiError as error:
+        render_api_error(error, title="The calibration could not be imported")
+        return None
+
+    report = response.get("report")
+    status = str(response.get("status", "created"))
+    if status == "already_exists":
+        st.info(
+            "This exact calibration already exists. No duplicate report was created.",
+            icon=":material/check_circle:",
+        )
+    else:
+        st.success(
+            "Calibration evidence saved. The raw label file was not stored.",
+            icon=":material/check_circle:",
+        )
+    return report if isinstance(report, dict) else None
+
+
+def _render_calibration_history(
+    api: Any,
+    run_id: str,
+    *,
+    candidate_id: str,
+    candidate_label: str,
+    metric_name: str,
+    imported_report: dict[str, Any] | None,
+) -> None:
+    try:
+        payload = api.calibration_reports(
+            run_id,
+            candidate_id=candidate_id,
+            metric_name=metric_name,
+            limit=100,
+            page=1,
+        )
+    except ApiError as error:
+        render_api_error(error, title="Calibration history could not be loaded")
+        if imported_report is None:
+            return
+        reports = [imported_report]
+        total = 1
+    else:
+        reports = collection_items(payload)
+        total = _page_total(payload, default=len(reports))
+        if imported_report is not None and not any(
+            report.get("id") == imported_report.get("id") for report in reports
+        ):
+            reports.append(imported_report)
+
+    selected = [
+        report
+        for report in reports
+        if _calibration_report_candidate_id(report) == candidate_id
+        and _calibration_report_metric(report).get("name") == metric_name
+    ]
+    selected.sort(key=lambda report: str(report.get("created_at", "")), reverse=True)
+    st.divider()
+    if not selected:
+        st.info(
+            "No calibration reports yet. Download a template when human review would help.",
+            icon=":material/science:",
+        )
+        return
+
+    latest = selected[0]
+    st.markdown("**Latest report**")
+    _render_calibration_evidence_labels(latest)
+    st.caption(_calibration_report_caption(latest, candidate_label=candidate_label))
+    _render_calibration_report_cards(latest)
+
+    if len(selected) > 1:
+        with st.expander(
+            f"Previous reports ({len(selected) - 1})",
+            icon=":material/history:",
+        ):
+            for report in selected[1:]:
+                with st.container(border=True):
+                    st.caption(_calibration_report_caption(report, candidate_label=candidate_label))
+                    _render_calibration_report_cards(report)
+
+    if total > len(reports):
+        st.caption(f"Showing the newest {len(reports):,} of {total:,} run reports.")
+
+    with st.expander("Technical details", icon=":material/fingerprint:"):
+        st.caption("Immutable identities and hashes for independent verification.")
+        safe_json_panel(
+            "Calibration report provenance",
+            [_calibration_technical_details(report) for report in selected],
+        )
+
+
+def _render_calibration_evidence_labels(report: dict[str, Any]) -> None:
+    evidence_column, validation_column = st.columns(2)
+    with evidence_column:
+        st.badge("Offline evidence", color="blue", icon=":material/offline_bolt:")
+    with validation_column:
+        production_validated = report.get("production_validated") is True
+        st.badge(
+            "Production validated" if production_validated else "Not production validated",
+            color="green" if production_validated else "gray",
+            icon=":material/verified_user:" if production_validated else ":material/info:",
+        )
+
+
+def _render_calibration_report_cards(report: dict[str, Any]) -> None:
+    render_metric_cards(
+        [
+            MetricCard("Sample size", _count_label(report.get("sample_size"))),
+            MetricCard("Precision", format_percent(report.get("precision"))),
+            MetricCard("Recall", format_percent(report.get("recall"))),
+            MetricCard("F1", format_percent(report.get("f1"))),
+        ]
+    )
+
+
+def _calibration_report_caption(
+    report: dict[str, Any],
+    *,
+    candidate_label: str,
+) -> str:
+    metric = _calibration_report_metric(report)
+    threshold = format_score(report.get("selected_threshold"))
+    direction = _direction_label(metric.get("direction"))
+    created = format_timestamp(report.get("created_at"))
+    return (
+        f"{candidate_label} · {_metric_label(str(metric.get('name', 'Metric')))} · "
+        f"{direction} · threshold {threshold} · {created}"
+    )
+
+
+def _calibration_technical_details(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "report_id": report.get("id"),
+        "run_id": report.get("run_id"),
+        "candidate_id": _calibration_report_candidate_id(report),
+        "dataset": report.get("dataset"),
+        "metric": _calibration_report_metric(report),
+        "label_manifest_sha256": first_value(
+            report,
+            "label_manifest_sha256",
+            "manifest_sha256",
+        ),
+        "report_sha256": report.get("report_sha256"),
+        "confusion_matrix": report.get("confusion_matrix"),
+        "human_pass_count": report.get("human_pass_count"),
+        "human_fail_count": report.get("human_fail_count"),
+        "reviewer_count": report.get("reviewer_count"),
+        "evidence_kind": report.get("evidence_kind"),
+        "production_validated": report.get("production_validated"),
+    }
+
+
+def _calibration_report_candidate_id(report: dict[str, Any]) -> str:
+    value = first_value(report, "candidate_id", "run_candidate_id")
+    return str(value) if value is not None else ""
+
+
+def _calibration_report_metric(report: dict[str, Any]) -> dict[str, Any]:
+    metric = report.get("metric")
+    if isinstance(metric, dict):
+        return metric
+    return {
+        "name": report.get("metric_name"),
+        "version": report.get("metric_version"),
+        "direction": report.get("metric_direction"),
+    }
+
+
+def _calibration_metric_options(
+    run: dict[str, Any],
+    results: list[dict[str, Any]],
+    candidate_id: str,
+) -> dict[str, dict[str, Any]]:
+    eligible: set[str] = set()
+    for result in results:
+        if _candidate_id(result) != candidate_id:
+            continue
+        metrics = normalized_metric_rows(
+            first_value(result, "metric_results", "metrics", "scores", default=[])
+        )
+        for metric in metrics:
+            name = str(first_value(metric, "name", "metric", default=""))
+            applicability = str(
+                first_value(metric, "applicability", "status", default="applicable")
+            ).lower()
+            score = first_value(metric, "score", "value")
+            if (
+                name
+                and name != "aggregate_quality"
+                and applicability
+                not in {
+                    "not_applicable",
+                    "error",
+                    "errored",
+                    "failed",
+                    "failure",
+                    "invalid",
+                }
+                and isinstance(score, (int, float))
+                and not isinstance(score, bool)
+                and math.isfinite(float(score))
+            ):
+                eligible.add(name)
+
+    metadata = _metric_metadata(run, results)
+    ordered = [name for name in metadata if name in eligible]
+    ordered.extend(sorted(eligible - set(ordered)))
+    return {name: metadata.get(name, {}) for name in ordered}
+
+
+def _calibration_default_threshold(metadata: dict[str, Any]) -> float:
+    value = metadata.get("threshold")
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and 0.0 <= float(value) <= 1.0
+    ):
+        return float(value)
+    return 0.5
+
+
+def _count_label(value: Any) -> str:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return f"{value:,}"
+    return "—"
+
+
+def _filename_token(value: str) -> str:
+    token = "".join(
+        character if character.isascii() and character.isalnum() else "-" for character in value
+    ).strip("-")
+    return token[:80] or "calibration"
 
 
 def _render_results(

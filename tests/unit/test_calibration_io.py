@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import json
 import math
 import os
@@ -17,11 +18,14 @@ from evalforge.evaluation.calibration_io import (
     REPORT_SCHEMA_VERSION,
     CalibrationInputError,
     CalibrationLabelManifest,
+    CalibrationTemplateRow,
     LocalCalibrationReportSink,
     build_calibration_report,
     canonical_manifest_bytes,
     load_calibration_manifest,
+    load_calibration_manifest_bytes,
     manifest_sha256,
+    render_calibration_template,
 )
 
 CSV_COLUMNS = (
@@ -139,6 +143,173 @@ def test_json_and_csv_load_to_equal_order_independent_canonical_manifests(
         manifest_sha256(json_manifest)
         == hashlib.sha256(canonical_manifest_bytes(json_manifest)).hexdigest()
     )
+
+
+def test_signed_zero_scores_have_one_canonical_manifest_identity() -> None:
+    signed_payload = _manifest_payload()
+    unsigned_payload = _manifest_payload()
+    signed_labels = signed_payload["labels"]
+    unsigned_labels = unsigned_payload["labels"]
+    assert isinstance(signed_labels, list)
+    assert isinstance(unsigned_labels, list)
+    assert isinstance(signed_labels[0], dict)
+    assert isinstance(unsigned_labels[0], dict)
+    signed_labels[0]["score"] = -0.0
+    unsigned_labels[0]["score"] = 0.0
+
+    signed = CalibrationLabelManifest.model_validate(signed_payload)
+    unsigned = CalibrationLabelManifest.model_validate(unsigned_payload)
+
+    assert canonical_manifest_bytes(signed) == canonical_manifest_bytes(unsigned)
+    assert manifest_sha256(signed) == manifest_sha256(unsigned)
+
+
+def test_bounded_upload_parser_matches_path_loader_and_rejects_unsafe_bytes(
+    tmp_path: Path,
+) -> None:
+    json_path = _write_json(tmp_path / "labels.json")
+    csv_path = _write_csv(tmp_path / "labels.csv")
+
+    assert load_calibration_manifest_bytes(
+        json_path.read_bytes(), filename="labels.json"
+    ) == load_calibration_manifest(json_path)
+    assert load_calibration_manifest_bytes(
+        csv_path.read_bytes(), filename="labels.csv"
+    ) == load_calibration_manifest(csv_path)
+
+    with pytest.raises(CalibrationInputError, match="UTF-8"):
+        load_calibration_manifest_bytes(b"\xff", filename="labels.json")
+    with pytest.raises(CalibrationInputError, match="2 MiB"):
+        load_calibration_manifest_bytes(
+            b"x" * (MAX_CALIBRATION_FILE_BYTES + 1), filename="labels.csv"
+        )
+    with pytest.raises(CalibrationInputError, match="invalid"):
+        load_calibration_manifest_bytes(
+            b'{"schema_version":"first","schema_version":"second"}',
+            filename="labels.json",
+        )
+    with pytest.raises(CalibrationInputError, match="JSON or CSV"):
+        load_calibration_manifest_bytes(b"{}", filename="labels.txt")
+
+
+def test_template_rendering_is_canonical_and_contains_empty_reviewer_fields() -> None:
+    manifest = _manifest()
+    positioned = [
+        CalibrationTemplateRow(
+            item_id=row.item_id,
+            case_position=position,
+            case_external_id=f"case-{position + 1}",
+            score=row.score,
+        )
+        for position, row in enumerate(manifest.labels)
+    ]
+    rows = tuple(reversed(positioned))
+
+    json_template = render_calibration_template(
+        dataset=manifest.dataset,
+        metric=manifest.metric,
+        rows=rows,
+        file_format="json",
+    )
+    repeated = render_calibration_template(
+        dataset=manifest.dataset,
+        metric=manifest.metric,
+        rows=tuple(reversed(rows)),
+        file_format="json",
+    )
+    csv_template = render_calibration_template(
+        dataset=manifest.dataset,
+        metric=manifest.metric,
+        rows=rows,
+        file_format="csv",
+    )
+
+    payload = json.loads(json_template)
+    assert json_template == repeated
+    assert [row["item_id"] for row in payload["labels"]] == [row.item_id for row in positioned]
+    assert [row["case_external_id"] for row in payload["labels"]] == [
+        row.case_external_id for row in positioned
+    ]
+    assert [row["case_position"] for row in payload["labels"]] == [0, 1, 2]
+    assert all(row["human_passed"] is None for row in payload["labels"])
+    assert all(row["reviewer_id"] == "" for row in payload["labels"])
+    csv_rows = list(csv.DictReader(csv_template.decode("utf-8").splitlines()))
+    assert [row["item_id"] for row in csv_rows] == [row.item_id for row in positioned]
+    assert [row["case_external_id"] for row in csv_rows] == [
+        row.case_external_id for row in positioned
+    ]
+    assert [row["case_position"] for row in csv_rows] == ["0", "1", "2"]
+    assert all(row["human_passed"] == "" for row in csv_rows)
+    assert all(row["reviewer_id"] == "" for row in csv_rows)
+
+
+@pytest.mark.parametrize("dangerous_prefix", ["=", "+", "-", "@", "\t", "\r"])
+def test_csv_template_formula_safes_case_labels(dangerous_prefix: str) -> None:
+    manifest = _manifest()
+    rendered = render_calibration_template(
+        dataset=manifest.dataset,
+        metric=manifest.metric,
+        rows=(
+            CalibrationTemplateRow(
+                item_id="result-1",
+                case_position=0,
+                case_external_id=f"{dangerous_prefix}unsafe",
+                score=0.5,
+            ),
+        ),
+        file_format="csv",
+    )
+    rows = list(csv.DictReader(io.StringIO(rendered.decode("utf-8"), newline="")))
+
+    assert rows[0]["case_external_id"] == f"'{dangerous_prefix}unsafe"
+    assert not rows[0]["case_external_id"].startswith(("=", "+", "-", "@", "\t", "\r"))
+
+
+def test_review_mapping_is_verified_metadata_not_a_format_dependent_manifest_hash() -> None:
+    manifest = _manifest()
+    template_rows = (
+        CalibrationTemplateRow(
+            item_id="result-1",
+            case_position=0,
+            case_external_id="+formula-shaped-case",
+            score=0.5,
+        ),
+    )
+    json_payload = json.loads(
+        render_calibration_template(
+            dataset=manifest.dataset,
+            metric=manifest.metric,
+            rows=template_rows,
+            file_format="json",
+        )
+    )
+    json_payload["labels"][0].update({"human_passed": True, "reviewer_id": "reviewer-01"})
+    json_manifest = load_calibration_manifest_bytes(
+        json.dumps(json_payload).encode("utf-8"),
+        filename="labels.json",
+    )
+
+    csv_template = render_calibration_template(
+        dataset=manifest.dataset,
+        metric=manifest.metric,
+        rows=template_rows,
+        file_format="csv",
+    )
+    csv_rows = list(csv.DictReader(io.StringIO(csv_template.decode("utf-8"), newline="")))
+    csv_rows[0].update({"human_passed": "true", "reviewer_id": "reviewer-01"})
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=csv_rows[0].keys(), lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(csv_rows)
+    csv_manifest = load_calibration_manifest_bytes(
+        stream.getvalue().encode("utf-8"),
+        filename="labels.csv",
+    )
+
+    assert json_manifest.labels[0].case_external_id == "+formula-shaped-case"
+    assert csv_manifest.labels[0].case_external_id == "'+formula-shaped-case"
+    assert canonical_manifest_bytes(json_manifest) == canonical_manifest_bytes(csv_manifest)
+    assert manifest_sha256(json_manifest) == manifest_sha256(csv_manifest)
 
 
 @pytest.mark.parametrize(
