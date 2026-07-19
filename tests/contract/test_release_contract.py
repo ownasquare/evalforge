@@ -13,7 +13,9 @@ CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 DEPENDABOT_CONFIG = ROOT / ".github/dependabot.yml"
 ENV_EXAMPLE = ROOT / ".env.example"
-RELEASE_NOTES = ROOT / "docs/releases/v0.1.0.md"
+README = ROOT / "README.md"
+SECURITY_POLICY = ROOT / "SECURITY.md"
+RELEASE_NOTES = ROOT / "docs" / "releases" / f"v{__version__}.md"
 
 APPROVED_ACTION_PINS = {
     "actions/checkout": (
@@ -37,10 +39,6 @@ EXPECTED_WORKFLOW_ACTIONS = {
     CI_WORKFLOW: set(APPROVED_ACTION_PINS),
     RELEASE_WORKFLOW: {"actions/checkout", "astral-sh/setup-uv"},
 }
-SHIPPED_CHANGELOG_ITEMS = {
-    "- Simplified first-run guidance and public project documentation.",
-    "- Added tested source-extension examples and community templates.",
-}
 ACTION_LINE = re.compile(
     r"^\s*-\s+uses:\s+(?P<action>[^@\s]+)@(?P<ref>[0-9a-f]{40})"
     r"\s+#\s+(?P<tag>v\d+\.\d+\.\d+)\s*$"
@@ -57,13 +55,13 @@ def _changelog_section(text: str, version: str) -> str:
     return match.group("body")
 
 
-def _changed_subsection(section: str) -> str:
+def _subsection(section: str, heading: str) -> str:
     match = re.search(
-        r"^### Changed\n(?P<body>.*?)(?=^### |\Z)",
+        rf"^### {re.escape(heading)}\n(?P<body>.*?)(?=^### |\Z)",
         section,
         flags=re.MULTILINE | re.DOTALL,
     )
-    assert match is not None, "Changelog section must contain a Changed subsection"
+    assert match is not None, f"Changelog section must contain a {heading} subsection"
     return match.group("body")
 
 
@@ -88,12 +86,45 @@ def test_release_version_is_consistent_across_runtime_and_metadata() -> None:
 
 def test_changelog_has_a_clean_unreleased_section_and_shipped_release_notes() -> None:
     changelog = CHANGELOG.read_text(encoding="utf-8")
-    unreleased_changed = _changed_subsection(_changelog_section(changelog, "Unreleased"))
-    released_changed = _changed_subsection(_changelog_section(changelog, __version__))
+    unreleased = _changelog_section(changelog, "Unreleased")
+    released = _changelog_section(changelog, __version__)
+    released_added = _subsection(released, "Added")
 
-    assert unreleased_changed.strip() == "- No changes yet."
-    assert not SHIPPED_CHANGELOG_ITEMS.intersection(unreleased_changed.splitlines())
-    assert set(released_changed.splitlines()) >= SHIPPED_CHANGELOG_ITEMS
+    assert _subsection(unreleased, "Added").strip() == "- No changes yet."
+    assert _subsection(unreleased, "Changed").strip() == "- No changes yet."
+    assert "- Offline JSON/CSV human-label ingestion" in released_added
+    assert "`evalforge calibrate`" in released_added
+    assert (
+        f"[Unreleased]: https://github.com/ownasquare/evalforge/compare/v{__version__}...HEAD"
+        in changelog
+    )
+    assert (
+        f"[{__version__}]: https://github.com/ownasquare/evalforge/releases/tag/v{__version__}"
+        in changelog
+    )
+
+
+def test_public_docs_reference_the_current_supported_release() -> None:
+    readme = README.read_text(encoding="utf-8")
+    security_policy = SECURITY_POLICY.read_text(encoding="utf-8")
+    release_tag = f"v{__version__}"
+    release_url = f"https://github.com/ownasquare/evalforge/releases/tag/{release_tag}"
+
+    assert re.search(
+        rf"^\[!\[Release: {re.escape(release_tag)} beta\]\("
+        rf"[^\n]*release-{re.escape(release_tag)}%20beta[^\n]*\)\]"
+        rf"\({re.escape(release_url)}\)$",
+        readme,
+        flags=re.MULTILINE,
+    )
+    assert f"[{release_tag} public-beta release]({release_url})" in readme
+    assert re.search(
+        rf"^\| `{re.escape(release_tag)}` \| Supported public beta \|$",
+        security_policy,
+        flags=re.MULTILINE,
+    )
+    assert "| `v0.1.x` | Unsupported |" in security_policy
+    assert "| `main` | Supported development version |" in security_policy
 
 
 def test_ci_and_release_actions_use_only_exact_approved_sha_pins() -> None:
@@ -158,8 +189,14 @@ def test_versioned_release_notes_preserve_the_public_beta_boundary() -> None:
     assert RELEASE_NOTES.is_file()
     notes = RELEASE_NOTES.read_text(encoding="utf-8")
 
-    assert "local-first public beta" in notes
-    assert "key-free and works offline" in notes
-    assert "does not certify hosted OIDC" in notes
-    assert "paid-provider calibration" in notes
-    assert "not published to PyPI or a container registry" in notes
+    assert notes.startswith(f"# EvalForge v{__version__}\n")
+    assert "permanently offline workflow" in notes
+    assert "JSON or CSV human-label" in notes
+    assert "evalforge calibrate" in notes
+    assert re.search(r"`production_validated(?::\s*|=)false`", notes)
+    assert "not evidence of real human review" in notes
+    assert "contact a model provider" in notes
+    assert "certify hosted OIDC" in notes
+    assert "certify a production deployment" in notes
+    assert re.search(r"not published to PyPI or (?:an OCI|a container) registry", notes)
+    assert "GitHub Release is the distribution" in notes
