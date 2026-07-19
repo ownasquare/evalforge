@@ -1,0 +1,268 @@
+---
+description: "EvalForge v0.3.0 persisted calibration release and continuation handoff"
+alwaysApply: false
+---
+
+# EvalForge v0.3.0 persisted calibration release handoff
+
+## INVENTORY NEXT ITEMS
+
+### P1 — Complete one authorized provider and human-reviewed calibration
+
+- **Who:** EvalForge evaluation owner, an authorized benchmark/data owner, a human-review owner, and the operator of `ownasquare/evalforge`; tracked in [GitHub issue #3](https://github.com/ownasquare/evalforge/issues/3).
+- **What:** The reusable calibration ingestion and persistence workflow is shipped, but no real provider/model/dataset configuration has been authorized, run, human-reviewed, or approved as a release-gating threshold.
+- **How discovered:** The v0.3.0 browser proof, release record, issue scan, and calibration evidence all explicitly report `evidence_kind=offline_statistical_evidence` and `production_validated=false`. Issue #3's authorized-calibration checklist remains open. A v0.3.0 evidence update was posted at [issue comment 5015608152](https://github.com/ownasquare/evalforge/issues/3#issuecomment-5015608152).
+- **Where to fix:** Repository `/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard`; public tracker `ownasquare/evalforge#3`; provider gates in `src/evalforge/evaluation/adapters/`, `src/evalforge/config.py`, and `src/evalforge/schemas.py`; calibration surfaces in `src/evalforge/evaluation/calibration_service.py`, `src/evalforge/api/routes/calibrations.py`, and `src/evalforge/dashboard/pages/run_detail.py`; methodology and evidence docs under `docs/`.
+- **When it appears:** Only after an operator opts into a live provider path and attempts to interpret heuristic metric thresholds as real quality or release gates.
+- **Detailed description:** v0.3.0 verifies label manifests against immutable stored run results, stores only aggregate reports, and shows their precision/recall/F1. That proves the mechanics and privacy boundary. It does not prove that a metric threshold predicts human judgment for a real model, provider API mode, rubric, prompt, dataset, or deployment. The next run requires explicit authorization before any provider request or data transfer, including an immutable benchmark hash, exact allowed fields, provider/model allowlist, API mode, spend ceiling, and named evidence owner. Real reviewers must use anonymous reviewer codes; their agreement and disagreement need analysis without persisting raw identity.
+- **Acceptance criteria:**
+  - Exact provider, model, API mode, dataset path/hash, prompt/rubric hashes, transferred fields, and spend ceiling are approved before execution.
+  - Provider request IDs, outputs, latency, usage, cost source, and non-secret configuration identifiers are recorded without exposing credentials.
+  - Human labels are imported through the shipped run-linked workflow and compared with the selected metric threshold.
+  - Threshold choice, precision, recall, F1, confusion matrix, reviewer agreement, disagreements, limitations, and failure cases are documented.
+  - A second run under the same versioned configuration records expected provider nondeterminism.
+  - Recalibration triggers are defined for changes to provider, model, API mode, metric, rubric, prompt, dataset, or generation parameters.
+  - The report is never generalized beyond the tested configuration.
+- **Definition of done:** Issue #3's authorized-calibration checklist is checked with a linked, secret-safe completion record; the immutable run/export hashes and aggregate calibration report are readable after restart; provider evidence and human-review limitations are independently reviewed; the chosen threshold is either explicitly approved for the narrow configuration or rejected with reasons; protected CI remains green; no credential, raw reviewer identity, or private source data appears in GitHub, logs, screenshots, exports, or persisted calibration rows.
+- **Reason the issue exists:** Provider calls and human labels require external authority, data-governance choices, a budget, and real reviewers. Those inputs cannot be invented by a coding agent, and offline fixtures cannot substitute for them. The product deliberately refuses to promote offline reports into production validation.
+- **Priority:** P1.
+- **Why this priority:** This is the highest-value remaining validation of EvalForge's core purpose and the gate preventing heuristic scores from being marketed as reliable quality thresholds. It is not P0 because the product fails closed and labels offline evidence honestly.
+- **How to prevent regressions:** Preserve the existing provider allowlists, transfer acknowledgement, spend ceiling, one-request/no-automatic-retry behavior, canonical hashes, aggregate-only persistence, idempotency, and `production_validated=false` default. Add a contract test for every newly approved promotion rule rather than adding an undocumented UI toggle.
+- **How to ensure proper testing:** Use unit and integration tests for manifest/result matching, redaction, provider metadata, aggregation, and restart readback; run Playwright for the real dashboard workflow; run the authorized provider case only with explicit approval; include negative tests for changed hashes, duplicate labels, wrong candidate/run, wrong content type, threshold drift, provider failure, and budget rejection.
+- **Audit policies:** Secret-safe command execution; state readback/persistence; route/API contract mapping; identity-context and tenant isolation; validation-proof separation; provider transfer/spend gates; public-history scrub; protected-main and immutable-release controls.
+- **Other considerations:**
+  - Decide whether reviewer agreement is computed externally or added as a new aggregate-only report field.
+  - Do not add raw-label storage merely to simplify analysis.
+  - Do not close issue #3 after only another offline or mocked-provider run.
+  - If approval is unavailable, leave the issue open and make no production-calibration claim.
+
+### P1 — Prove hosted OIDC and tenant isolation with a real identity provider
+
+- **Who:** EvalForge deployment/identity owner and operator; tracked in [GitHub issue #2](https://github.com/ownasquare/evalforge/issues/2).
+- **What:** Asymmetric JWT, JWKS, role, workspace, and tenant-isolation behavior is covered by fixtures and tests, but no hosted browser login has been validated against a selected real IdP.
+- **How discovered:** Open-issue scan plus the release and security proof boundaries. Current CI proves authentication logic and fail-closed configuration, not a real OAuth/OIDC session lifecycle.
+- **Where to fix:** `src/evalforge/security/auth.py`, `src/evalforge/dashboard/auth.py`, `src/evalforge/config.py`, API dependencies and session routes, deployment configuration, `docs/security.md`, `docs/operations.md`, and issue #2.
+- **When it appears:** Hosted multi-user login, token expiry/re-login, logout, membership revocation, workspace switching, JWKS rotation/outage, multi-tab use, or service restart.
+- **Detailed description:** A production-shaped shared workspace depends on provider-specific issuer, audience, JWKS, OAuth metadata, cookies, redirect domains, and secret management. The current repository correctly rejects incomplete production configuration and tests signed fixtures, but fixture proof cannot reveal provider redirects, cookie/domain mistakes, key-rotation timing, or session leakage across tabs and workspaces.
+- **Acceptance criteria:**
+  - Hosted Playwright covers login, token handoff, expiry/re-login, and logout at the real HTTPS URLs.
+  - Viewer, editor, and admin journeys match the role contract.
+  - Cross-workspace reads/writes fail and API readback shows the effective workspace after every transition.
+  - Membership removal, disabled user, key rotation, JWKS outage/cache, clock skew, multi-tab, and restart cases are exercised.
+  - Tokens never appear in URLs, logs, screenshots, exports, dashboard state, or database rows.
+  - Evidence records the deployed commit/image, provider, date, non-secret setting names, and negative cases.
+- **Definition of done:** Issue #2 is closed with provider- and deployment-specific evidence, hosted Playwright, API-authenticated readback, negative tenant tests, secret-scrub results, and a completion document that does not generalize beyond the tested IdP/configuration.
+- **Reason the issue exists:** IdP tenant/application details, HTTPS domains, representative users, secret-manager configuration, and provider authority are external inputs. Local fixtures cannot safely invent or validate them.
+- **Priority:** P1.
+- **Why this priority:** It blocks trustworthy shared/hosted use and is a prerequisite for a credible production reference deployment. It is not P0 because local/offline use remains functional and production startup fails closed.
+- **How to prevent regressions:** Keep issuer/audience/algorithm allowlists, HTTPS requirements, workspace-scoped authorization, membership readback, cache/rotation tests, and secret redaction as fail-closed contracts. Add provider-specific Playwright cases to a protected hosted-validation lane.
+- **How to ensure proper testing:** Unit/integration tests for JWT/JWKS edge cases; Playwright only for hosted E2E; API readback after every identity transition; restart, multi-tab, revocation, and cross-tenant negative tests; no Cypress E2E.
+- **Audit policies:** Identity-context regression, tenant isolation, state readback/persistence, route/API contract map, secret-safe execution, hosted-proof separation, and public evidence scrubbing.
+- **Other considerations:**
+  - Select the IdP and domains before writing provider-specific code.
+  - Keep tokens and provider secrets out of issue comments and screenshots.
+  - Completion applies only to the tested provider and configuration.
+
+### P2 — Prove a production reference deployment, restore, and monitoring
+
+- **Who:** EvalForge infrastructure/operations owner and operator; tracked in [GitHub issue #4](https://github.com/ownasquare/evalforge/issues/4).
+- **What:** Containers, migrations, workers, PostgreSQL compatibility, and local browser flows are green, but there is no selected production host with TLS, managed PostgreSQL, durable worker topology, backup/restore, monitoring, and alert evidence.
+- **How discovered:** Open-issue scan and proof-boundary review. v0.3.0 CI builds both containers and passes PostgreSQL 3.11/3.12, but issue #4 correctly states that this is not deployment, failover, backup, or production proof.
+- **Where to fix:** Deployment/IaC selected by the operator; repository `Dockerfile.api`, `Dockerfile.dashboard`, `docker-compose.yml`, worker and database configuration, health/readiness routes, observability code, `docs/operations.md`, and issue #4.
+- **When it appears:** Deployment, replacement/restart, queued evaluation execution, database failure, provider failure, backup schedule, restore drill, rollback, retention/deletion, or operational alert.
+- **Detailed description:** The repository is production-shaped but intentionally host-agnostic. A credible reference deployment must select a platform, TLS ingress, image provenance policy, managed PostgreSQL sizing/pooling, secret manager, OIDC provider, API/worker topology, logs/metrics/alerts, retention policy, and recovery objectives. Stored evaluation and calibration evidence must survive service replacement, and one isolated restore must prove the relevant identities, memberships, runs, reports, and audits.
+- **Acceptance criteria:**
+  - HTTPS, trusted-host/CORS, OIDC, secrets, health, and readiness work at real URLs.
+  - API plus database-worker topology processes durable jobs with lease/fencing evidence.
+  - Migrations and stored run/calibration evidence survive restart and deployment replacement.
+  - A scheduled backup succeeds and an isolated restore proves schema, identities, memberships, runs, calibration reports, exports, and audit rows.
+  - Monitoring detects API, dashboard, worker, queue, database, and provider failures; at least one alert drill is recorded.
+  - Retention/deletion and rollback procedures are exercised.
+  - Hosted Playwright and API readback prove the deployed image/commit and benchmark-to-result-to-calibration workflow.
+- **Definition of done:** Issue #4 is closed with exact hosted URLs, immutable image/commit identifiers, secret-safe non-secret configuration inventory, successful backup and isolated restore evidence, alert drill, rollback/retention proof, hosted Playwright, API readback, and a scoped production completion record.
+- **Reason the issue exists:** Hosting platform, budget, domains, IdP, secret manager, managed database, monitoring provider, retention policy, and recovery objectives require owner decisions and external resources. CI cannot choose or create them implicitly.
+- **Priority:** P2.
+- **Why this priority:** It is essential for production adoption but depends on identity and infrastructure choices. The public local-first project and immutable release are already complete, so this is not an emergency release defect.
+- **How to prevent regressions:** Pin deployable images to immutable digests, keep protected deployment workflows, test migrations before rollout, schedule restore drills, monitor lease/queue/database health, and require hosted Playwright/API readback after deployment changes.
+- **How to ensure proper testing:** Container and migration contracts in CI; live managed-PostgreSQL integration; Playwright for hosted E2E; restart/replacement, worker lease, backup/restore, rollback, alert, and retention drills; verify stored calibration integrity after restore.
+- **Audit policies:** Deploy-automation hazards, validation-proof selection, state readback/persistence, identity-context regression, route/API contract mapping, secret-safe execution, release immutability, and recovery-evidence separation.
+- **Other considerations:**
+  - Current Compose remains a local convenience, not HA proof.
+  - Do not label container builds or CI PostgreSQL service containers as production deployment evidence.
+  - Coordinate issue #2 before claiming multi-user production readiness.
+
+### Inventory scan result
+
+No additional actionable product inconsistency was found. The scan covered the current diff and git status, full local checks, focused release contracts, real Streamlit/FastAPI browser behavior, desktop/mobile screenshots, console readback, Playwright E2E, PR and independent-main CI, live PostgreSQL jobs, both container builds, remote tag identity, release workflow, GitHub release API, downloaded artifact hashes/install, open PRs, and all open GitHub issues. The three items above are already explicit external gates rather than hidden v0.3.0 defects.
+
+## 1. Project Identity & Strategic Context — ✅ High
+
+- **Project:** EvalForge (`ownasquare/evalforge`), local path `/Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard`.
+- **Purpose:** A local-first LLM evaluation workbench for running versioned benchmarks across prompts/models, inspecting case evidence, comparing candidates, exporting provenance, and calibrating heuristic metrics against human review.
+- **Current release:** [v0.3.0](https://github.com/ownasquare/evalforge/releases/tag/v0.3.0), published immutable prerelease on 2026-07-19.
+- **Primary objective achieved:** Persist run-linked human calibration evidence with a focused Results UI, aggregate-only privacy, deterministic hashes, contributor documentation, protected CI, and public release artifacts.
+- **Success criteria met:** 431 applicable local tests, 84.17% branch coverage, 13 local Playwright E2E tests, desktop/mobile proof, clean console, live PostgreSQL 3.11/3.12 CI, both container builds, protected merge, independent main CI, immutable prerelease, verified checksums, and clean downloaded-wheel install.
+- **Hard constraints:** local-first default; no provider call without explicit opt-in/allowlist/transfer acknowledgement/spend ceiling; no raw human labels or reviewer identifiers persisted; no offline evidence presented as production validation; no mutation of immutable releases/tags; preserve tenant isolation and auditability.
+- **Design philosophy:** clean workflow, progressive disclosure, compact help/tooltips, no separate calibration navigation, evidence before decoration, explicit trust boundaries.
+- **Stack:** Python 3.11/3.12, FastAPI, Streamlit, SQLAlchemy/Alembic, SQLite/PostgreSQL, pytest, Ruff, mypy, Bandit, pip-audit, Playwright, Docker, GitHub Actions.
+
+## 2. Current System State & Architecture Map — ✅ High
+
+- **Fully implemented and verified:**
+  - Versioned evaluation datasets, prompts, model profiles, runs, candidates, results, comparisons, exports, audit, roles/workspaces, durable workers, offline demo, and local CLI.
+  - Calibration templates generated from immutable stored results in case order.
+  - CSV/JSON imports streamed into bounded memory, strict content-type checked, verified against run/candidate/dataset/metric evidence, canonicalized, hashed, and stored as aggregates.
+  - Append-only `CalibrationReport` persistence with cross-run candidate constraints, privacy-shape validation, reviewer/sample invariants, confusion/count/rate consistency, and idempotent replay.
+  - Optional Results-page UI for candidate/metric selection, template download, import, latest/history cards, and technical hashes.
+  - v0.3.0 docs, release notes, support/security guidance, docs index, and issue template.
+- **In progress:** Release-evidence documentation and this repo-local handoff mirror are carried by [PR #10](https://github.com/ownasquare/evalforge/pull/10). Check the PR's current state before assuming the mirror is on main.
+- **Broken/flaky/unstable:** No known product defect. CI cache-save races can emit benign annotations when parallel jobs reserve the same key; jobs still pass.
+- **Deliberately deferred:** Human calibration approval/promotion, raw-label storage, edit/delete endpoints, automatic threshold changes, hosted OIDC acceptance, authorized provider validation, and production deployment.
+- **End-to-end flow:** Seed/import benchmark → choose prompts/models → preflight → durable run/results → inspect/compare/export → optionally select candidate/metric → download verified label template → human completes labels externally → bounded import validates against immutable results → canonical manifest/report hashes → append-only aggregate persistence → filtered Results readback after reload.
+- **Key data/files:**
+  - `src/evalforge/models.py`: calibration persistence model and invariants.
+  - `src/evalforge/migrations/versions/0005_calibration_reports.py`: schema migration.
+  - `src/evalforge/evaluation/calibration_io.py`: templates, parsing, canonicalization, validation.
+  - `src/evalforge/evaluation/calibration_service.py`: run-linked orchestration/idempotency/integrity.
+  - `src/evalforge/api/routes/calibrations.py`: template/import/list/detail routes.
+  - `src/evalforge/dashboard/client.py` and `src/evalforge/dashboard/pages/run_detail.py`: client/UI.
+  - `docs/llm-evaluation-dashboard/2026-07-19-persisted-calibration-evidence.md`: feature proof.
+  - `docs/llm-evaluation-dashboard/2026-07-19-v0.3.0-release.md`: release proof.
+
+## 3. Critical Decisions & Reasoning History — ✅ High
+
+- Persist aggregates and hashes only; raw human labels and reviewer IDs are in-memory inputs, because durable raw review data changes the privacy and governance model.
+- Link every report to run, candidate, dataset snapshot/hash, metric/version/direction, and threshold; free-floating reports would be easy to misinterpret.
+- Make reports append-only and identical imports idempotent; no edit/delete/approval/promotion API exists in v0.3.0.
+- Use bounded streamed raw request bodies instead of multipart uploads to avoid temporary-disk spooling and keep the 2 MiB ceiling enforceable.
+- Require exact CSV/JSON content types to reduce cross-origin/simple-request mutation risk and accurately document the API.
+- Keep case labels as verified display metadata excluded from canonical label hashes so CSV and JSON remain equivalent; escape formula-shaped CSV values.
+- Normalize signed zero in scores/thresholds so semantically identical inputs have one identity.
+- Hide calibration tools behind one optional switch within Results; adding a new navigation destination would distract from the primary evaluation flow.
+- Label all current calibration reports `offline_statistical_evidence` and `production_validated=false`; no UI action can change that claim.
+- Release only from the exact protected-main squash commit after independent main CI; use an annotated tag and immutable prerelease workflow.
+
+## 4. Recent Work & Iteration Log (High Priority) — ✅ High
+
+- Implemented the complete persisted calibration slice across schema, migration, repository, service, API, client, UI, tests, and docs.
+- Independent review found and prompted fixes for: Alembic revision length, multipart disk spooling, persisted hash validation, cross-run candidate FK integrity, opaque template mapping, CSV formula injection, JSON/CSV hash divergence, OpenAPI raw-body metadata, CORS exposed headers, reviewer-count invariants, signed-zero identity, and content-type/CSRF boundaries.
+- Full local `make check` passed: 431 passed, 3 locally skipped PostgreSQL tests, 14 E2E deselected, 84.17% coverage.
+- Browser proof created a 10-result evaluation, downloaded a five-row template, imported labels, replayed identical input as `already_exists`, reloaded, and displayed the same persisted report. Desktop and mobile views were visually inspected; console warnings/errors were empty.
+- Local Playwright E2E passed 13 tests.
+- Built and installed a clean local wheel, then independently downloaded, checksum-verified, and installed the published wheel.
+- PR #9 passed six jobs and merged to `abf00360dabccebfb1dd6f2abe8fe91fba8f1c17`.
+- Independent main CI run 29685744874 passed all six jobs.
+- Annotated tag object `df3f6f9e3df617e626362280203bdb1a79b0e9dd` peels to the main commit.
+- Release run 29685817761 passed and published immutable prerelease v0.3.0 with wheel, source distribution, and SHA256SUMS.
+- Issue #3 received a current v0.3.0 evidence comment while remaining open for the authorized live run.
+
+## 5. Testing, Validation & Quality Framework — ✅ High
+
+- **Local:** `make check` covers Ruff, format, mypy, Bandit, pip-audit, pytest, branch coverage; result 431 passed, 3 skipped, 84.17%.
+- **Focused review:** 123 calibration-related tests, Ruff, mypy, diff checks, and PostgreSQL DDL compilation passed with no remaining findings.
+- **Browser:** real Streamlit-to-FastAPI-to-SQLite boundary, desktop 1440×1000, mobile 390×844, evaluation/import/reload persistence, console empty.
+- **E2E:** `uv run --all-groups --extra e2e pytest -q -m e2e tests/e2e`; 13 passed.
+- **Hosted PR/main:** quality, E2E, PostgreSQL 3.11, PostgreSQL 3.12, API Dockerfile, dashboard Dockerfile all green.
+- **Release:** contracts, build, artifact smoke install, checksums, GitHub Release creation all green.
+- **Artifact readback:** SHA256SUMS independently verified; downloaded wheel installed as `evalforge-dashboard==0.3.0`; import reported `0.3.0`.
+- **Known gap:** No live provider/human calibration, hosted IdP, backup/restore, alert drill, or production-hosted browser proof.
+
+## 6. Debugging History & Failure Modes — ✅ High
+
+- A temporary browser-proof `.env` changed demo ports and leaked into two launcher unit tests. Root cause was ambient project configuration, not product logic. The file and temporary SQLite/CSV proof artifacts were removed; a clean rerun passed.
+- Streamlit's switch input could not be toggled with a low-level checked-state call in the browser harness; clicking its unique visible label worked and the checked state was verified from a fresh DOM snapshot.
+- Multipart parsing initially looked convenient but could spool to disk before application limits ran. The route now streams a bounded raw body.
+- Template case mappings were initially opaque result IDs; case order/external labels were added for reviewer usability while immutable IDs remain the verification anchor.
+- Adding display mapping fields to canonical hashes caused JSON/CSV identity drift; display fields are verified but excluded from the canonical label identity.
+- Float signed zero could create different hashes for equivalent thresholds/scores; canonical numeric normalization fixed it.
+- Database-level candidate/run integrity required a composite relationship, not service-only checks.
+- GitHub main CI emitted cache-reservation annotations from parallel jobs. Treat as benign only when every required job is successful; never suppress a real failure under that explanation.
+
+## 7. Established Processes & Effective Patterns — ✅ High
+
+1. Read the repo handoff/completion docs and current Git/GitHub state before changing code.
+2. Use an isolated branch/worktree when primary working state contains user-owned files; never stage unrelated files.
+3. Run all terminal-capable commands through `/Users/fortunevieyra/.codex/bin/codex-secret-safe-exec.py`; use URL-safe base64 JSON argv for shell fragments, regex, inline code, globs, or arguments with metacharacters/spaces.
+4. Implement one vertical slice across storage, service, API, client, UI, tests, and docs.
+5. Ask an independent reviewer to look for integrity, privacy, migration, authorization, usability, and release defects.
+6. Run focused tests during iteration, then `make check`, real browser proof, and Playwright E2E.
+7. Build/install the wheel cleanly before publication.
+8. Push an intentional branch, open a draft PR, wait for every protected check, mark ready, and merge by squash.
+9. Wait for independent main CI before creating an annotated version tag.
+10. Push the tag once, let the release workflow build from the tag, and verify release API state, tag object/peeled target, assets, checksums, and clean downloaded-artifact install.
+11. Keep completion docs and handoff artifacts in the repository; keep external proof layers explicit.
+
+## 8. Risks, Technical Debt & Strict Preservation Rules — ✅ High
+
+- **Do not touch:** `/Users/fortunevieyra/Documents/Github/ai-projects/personal-rag-system`; another task owns it.
+- **Do not overwrite or stage:** the primary EvalForge worktree's user-owned untracked historical docs dated 2026-07-17 and 2026-07-18.
+- **Do not move or recreate:** tags/releases `v0.2.0` or `v0.3.0`; both releases are immutable.
+- **Do not persist:** raw human labels, reviewer names/IDs, or uploaded calibration files without a separately approved privacy design.
+- **Do not add:** report edit/delete/approval/threshold-promotion endpoints as an incidental extension.
+- **Do not claim:** a deterministic fixture, local browser run, CI container, live CI PostgreSQL service, or offline calibration is provider or production validation.
+- **Do not weaken:** candidate/run/dataset/metric/threshold linkage, canonical hashes, strict content types, body limits, tenant isolation, audit events, or provider transfer/spend gates.
+- **Risk:** Aggregate metrics can still be overinterpreted on small samples; the UI must retain sample size and offline/not-production labels.
+- **Risk:** Adding reviewer agreement may tempt raw-data storage; prefer an externally computed or aggregate-only extension with explicit governance.
+- **Technical debt:** The production reference architecture remains host-agnostic, and hosted OIDC/provider evidence depends on external choices.
+
+## 9. Key Artifacts & References — ✅ High
+
+- Public repository: `https://github.com/ownasquare/evalforge`.
+- Feature PR: `https://github.com/ownasquare/evalforge/pull/9`.
+- Release-evidence PR: `https://github.com/ownasquare/evalforge/pull/10`.
+- Release: `https://github.com/ownasquare/evalforge/releases/tag/v0.3.0`.
+- Main source SHA: `abf00360dabccebfb1dd6f2abe8fe91fba8f1c17`.
+- Tag object: `df3f6f9e3df617e626362280203bdb1a79b0e9dd`.
+- PR CI: `https://github.com/ownasquare/evalforge/actions/runs/29685674810`.
+- Main CI: `https://github.com/ownasquare/evalforge/actions/runs/29685744874`.
+- Release workflow: `https://github.com/ownasquare/evalforge/actions/runs/29685817761`.
+- Wheel SHA-256: `5225cc11d5c9461197b16b853d0cc9fa9e5c4818760bb6352bd9f2f51b80363a`.
+- Source SHA-256: `3b6f51e3c207a4e4966dbcbea268f681262256e689ff57c763bef06c982a4c37`.
+- Completion docs: `docs/llm-evaluation-dashboard/2026-07-19-persisted-calibration-evidence.md` and `docs/llm-evaluation-dashboard/2026-07-19-v0.3.0-release.md`.
+- Open gates: issues [#2](https://github.com/ownasquare/evalforge/issues/2), [#3](https://github.com/ownasquare/evalforge/issues/3), and [#4](https://github.com/ownasquare/evalforge/issues/4).
+
+Safe current-truth commands:
+
+```bash
+/Users/fortunevieyra/.codex/bin/codex-secret-safe-exec.py -- git -C /Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard fetch origin --tags --prune
+/Users/fortunevieyra/.codex/bin/codex-secret-safe-exec.py -- git -C /Users/fortunevieyra/Documents/Github/ai-projects/llm-evaluation-dashboard status --short --branch
+/Users/fortunevieyra/.codex/bin/codex-secret-safe-exec.py -- gh release view v0.3.0 --repo ownasquare/evalforge
+```
+
+## 10. Next Steps & Prioritized Backlog — ✅ High
+
+1. **P1, external approval required:** continue issue #3 with exact provider/model/dataset/transfer/spend authorization and real reviewers. Do not start provider work from assumptions.
+2. **P1, external identity inputs required:** continue issue #2 after the IdP tenant/application and hosted domains are selected.
+3. **P2, external infrastructure choices required:** continue issue #4 after hosting, PostgreSQL, secret manager, OIDC, monitoring, retention, and recovery targets are selected.
+4. Before any of these, verify PR #10 and local `origin/main` current truth. If the primary working tree still has the historical untracked docs, preserve them while fast-forwarding tracked main.
+5. If no external input is available, stop at the shipped v0.3.0 boundary rather than adding speculative features or clutter.
+
+## 11. Continuation & Working Style Instructions — ✅ High
+
+- Lead with current evidence and outcome; do not restart discovery from scratch.
+- Treat the completion docs, GitHub PR/release state, and this handoff as pointers, then cheaply re-verify drift-prone facts.
+- Keep the UI focused on evaluation and review. Use progressive disclosure and compact tooltips for technical details.
+- Maintain the distinction among local, browser, hosted CI, live database, provider, release, deployment, and production proof.
+- For any external provider/IdP/deployment action, identify missing authority and inputs before mutation.
+- Use `apply_patch` for authored file edits and exact-path staging/commits.
+- Preserve user-owned and unrelated workspace changes; never clean or restore them for convenience.
+- Run focused tests, full checks, browser proof, protected GitHub checks, and durable completion documentation in proportion to risk.
+- Use Playwright for E2E; do not introduce Cypress E2E.
+- Close an issue only when every acceptance criterion is evidenced, not when implementation merely makes the external run possible.
+
+## 12. Confidence & Freshness Assessment — ✅ High
+
+| Section | Confidence | Freshness basis |
+| --- | --- | --- |
+| 1. Project identity and strategy | ✅ High | Confirmed from v0.3.0 source, public repo, and release in this session. |
+| 2. System state and architecture | ✅ High | Implemented, independently reviewed, tested, and browser-verified in this session. |
+| 3. Decisions and reasoning | ✅ High | Captured from the final implementation/review fixes and current docs. |
+| 4. Recent work | ✅ High | Direct execution evidence from this session. |
+| 5. Testing and quality | ✅ High | Local, browser, PR, main, PostgreSQL, container, and release runs read back after completion. |
+| 6. Debugging history | ✅ High | Root causes and clean reruns observed directly. |
+| 7. Processes | ✅ High | Process was executed end to end through immutable release readback. |
+| 8. Risks and preservation | ✅ High | Matches current product boundaries, user constraints, and immutable release state. |
+| 9. Artifacts and references | ✅ High | URLs, SHAs, hashes, and issue states were read back immediately before handoff creation. |
+| 10. Next steps | ✅ High | Seeded from the complete open-issue and integration scan. |
+| 11. Working style | ✅ High | Matches active home/repo execution rules used for this work. |
+| 12. Overall assessment | ✅ High | No unverified completion claim remains; only explicit external gates are open. |
