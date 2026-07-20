@@ -71,24 +71,29 @@ live-provider latency/cost, or production proof.
 | Local Playwright E2E | 13 passed |
 | Hosted Playwright specification without private fixtures | 3 explicit skips with each missing input named |
 | Commercial + tenant-route regression | 18 passed after the final route/service boundary repair |
-| Ruff full tree and format check | Passed; 135 Python files formatted |
-| Strict mypy | Passed; 80 source files |
+| Ruff full tree and format check | Passed; 138 files already formatted |
+| Strict mypy | Passed; 76 source files |
 | Configured Bandit scan | Passed |
 | Dependency audit | No known third-party vulnerabilities; the local package is not published on the package index and is skipped by the auditor |
 | Patch integrity | `git diff --check` passed |
 | Browser console | 0 warnings, 0 errors |
+| Pull-request CI | All six jobs passed on run `29768508446`: quality, browser E2E, PostgreSQL 3.11, PostgreSQL 3.12, API image, and dashboard image |
 
 ## Commit and push evidence
 
 - Validated implementation commit: `73d27f77cd097040b35649b1f36b75edf391b107` (`Add EvalForge commercialization pilot`).
+- Publication-evidence commit: `10b8db80c2d7f37805cc5acfd56f62d850afba89` (`Record commercialization publication evidence`).
+- CI portability commit: `247358c52a52985a25b52ae55c157477a28295e9` (`Stabilize Ruff Alembic import classification`).
 - Remote: `origin` (`ownasquare/evalforge`).
 - Published branch: `agent/own-a-square-commercialization-pilot`.
 - Draft review: [pull request #11](https://github.com/ownasquare/evalforge/pull/11), targeting `main`.
-- Initial remote branch readback matched the full implementation commit before this documentation-only
-  evidence refresh.
+- The CI-validated source head matched `247358c52a52985a25b52ae55c157477a28295e9`.
+- [GitHub Actions run 29768508446](https://github.com/ownasquare/evalforge/actions/runs/29768508446)
+  completed successfully with all six jobs green.
 
-The four PostgreSQL checks require an explicit disposable PostgreSQL test URL. They were not relabeled
-as passing. The hosted Playwright tests require a deployed HTTPS dashboard/API, two live identities,
+Four local PostgreSQL-specific cases require an explicit disposable PostgreSQL test URL and remained
+truthfully skipped in the local full suite. Separately, the pull request's PostgreSQL 3.11 and 3.12
+jobs passed against their ephemeral CI databases. The hosted Playwright tests require a deployed HTTPS dashboard/API, two live identities,
 two workspaces, private token files, separate authenticated-app and IdP-only browser states, and an
 explicitly disposable mutable primary workspace.
 
