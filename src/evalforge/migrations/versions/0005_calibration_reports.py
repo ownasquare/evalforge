@@ -7,7 +7,6 @@ Revises: 0004_durable_execution_leases
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision: str = "0005_calibration_reports"

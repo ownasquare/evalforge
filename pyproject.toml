@@ -119,6 +119,9 @@ ignore = ["S101"]
 "tests/**/*.py" = ["S101", "S105", "S106", "S108"]
 "src/evalforge/migrations/**/*.py" = ["E501"]
 
+[tool.ruff.lint.isort]
+known-third-party = ["alembic"]
+
 [tool.ruff.format]
 quote-style = "double"
 

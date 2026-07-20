@@ -7,7 +7,6 @@ Revises: 0003_identity_tenant_scope
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-
 from alembic import op
 
 revision: str = "0004_durable_execution_leases"

@@ -7,7 +7,6 @@ Revises: 0005_calibration_reports
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-
 from alembic import context, op
 
 revision: str = "0006_commercial_pilot"

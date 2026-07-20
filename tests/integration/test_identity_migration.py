@@ -5,13 +5,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from sqlalchemy import MetaData, inspect, select, text
 from sqlalchemy.engine import Connection, Engine
 
-from alembic import command
 from evalforge.database import (
     EXPECTED_SCHEMA_REVISION,
     check_database_readiness,
