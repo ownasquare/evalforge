@@ -61,8 +61,11 @@ Revision `0003_identity_tenant_scope` adds identity, memberships, workspace scop
 then backfills existing pre-identity data into the stable local workspace. Its downgrade refuses to
 discard nonlocal identity or audit data and is regression-tested for an exact populated-`0002`
 round trip. Revision `0004_durable_execution_leases` adds persisted claim, lease, heartbeat, and
-attempt evidence. SQLite migration connections temporarily suspend foreign-key enforcement only
-around Alembic batch reconstruction, validate `foreign_key_check`, and restore enforcement.
+attempt evidence. Revision `0005_calibration_reports` adds immutable run-linked calibration
+summaries. Revision `0006_commercial_pilot` adds workspace entitlements, append-only billing and
+activation evidence, and pending team-pilot qualification requests. SQLite migration connections temporarily
+suspend foreign-key enforcement only around Alembic batch reconstruction, validate
+`foreign_key_check`, and restore enforcement.
 
 ## Execution topologies
 
@@ -87,9 +90,11 @@ uv run evalforge seed
 uv run evalforge doctor
 ```
 
-Bare `postgresql://` URLs are rejected. Local PostgreSQL 17 proof covers packaged migrations,
-schema drift, seed/doctor, atomic claim contention, lifecycle, and database-clock eligibility. It
-does not prove hosted failover, backups, connection-pool sizing, or production availability.
+Bare platform-provided `postgresql://` URLs are normalized internally to
+`postgresql+psycopg://`; explicit `postgresql+psycopg://` URLs remain supported. Local PostgreSQL 17
+proof covers packaged migrations, schema drift, seed/doctor, atomic claim contention, lifecycle,
+and database-clock eligibility. It does not prove hosted failover, backups, connection-pool sizing,
+or production availability.
 
 ## Identity operations
 
@@ -138,10 +143,87 @@ and passes it to Streamlit through `--secrets.files`. Missing, unreadable, weak,
 incomplete configuration stops startup before Streamlit binds. Native OIDC operators can instead
 set `EVALFORGE_STREAMLIT_AUTH_FILE` to an absolute path and use the same validated launcher.
 
+On a host that provides secret environment bindings but no secret-file mount, set
+`EVALFORGE_DASHBOARD_PUBLIC_BASE_URL` plus all four
+`EVALFORGE_DASHBOARD_OIDC_CLIENT_ID`, `EVALFORGE_DASHBOARD_OIDC_CLIENT_SECRET`,
+`EVALFORGE_DASHBOARD_OIDC_SERVER_METADATA_URL`, and
+`EVALFORGE_DASHBOARD_OIDC_COOKIE_SECRET` values. The launcher validates them, writes a temporary
+mode-`0600` TOML file, clears those values before Streamlit starts, and removes the file on exit.
+The dashboard public URL supplies the exact `/oauth2callback` redirect. Do not print these values or
+use this fallback as evidence that the identity provider was successfully exercised.
+The launcher also replaces inherited provider keys and the metrics token with non-rehydrating
+sentinels and replaces any credential-bearing database URL with an isolated in-memory SQLite URL;
+the dashboard is an API client and receives none of those server-only credentials.
+
+## Hosted commercialization pilot
+
+The OSS workflow remains the default and does not require commercial state. The hosted pilot is
+available only with both shared OIDC and:
+
+```text
+EVALFORGE_COMMERCIAL_PILOT_ENABLED=true
+EVALFORGE_HOSTED_TRIAL_DAYS=14
+EVALFORGE_HOSTED_TRIAL_SEAT_LIMIT=5
+```
+
+Run `uv run evalforge migrate` once as the deployment migration authority before starting API or
+worker processes. It applies the packaged Alembic chain, verifies database readiness, emits only
+the safe database backend, and exits nonzero on failure. Hosted API and worker services set
+`EVALFORGE_AUTO_MIGRATE=false`; the worker honors that flag and performs readiness-only startup so
+parallel services cannot race Alembic.
+
+Plans are code-defined; they are not a provider catalog. The server stores at most one current
+entitlement per workspace, append-only `billing_events`, append-only content-minimized
+`activation_events`, and team-pilot requests. A trial starts in `trialing`; its effective state can
+be `trialing`, `active`, `expired`, or `canceled`. Team requests use only `pending`, `canceled`,
+`qualified`, or `declined`. The member-facing pilot API currently creates `pending` requests and
+allows an administrator to cancel a pending request. There is no operator qualification endpoint,
+invoice, subscription, webhook, Stripe checkout, or live-money activation in this first slice.
+A new request requires a same-actor successful comparison plus post-completion export engagement,
+and the server permits only one pending request per workspace.
+
+The stable activation vocabulary is `landing`, `signup`, `core_job_start`,
+`evaluation_complete`, `result_engagement`, `second_use`, `upgrade_view`, `checkout_start`,
+`entitlement_activation`, and `team_request_submitted`. Only `landing`, `signup`, and
+`upgrade_view` may originate at the dashboard API boundary. Client idempotency keys are
+server-namespaced by actor, first-touch events are deduplicated, and ingestion is capped at 100
+client events per actor per UTC day. Run acceptance, qualifying two-candidate completion,
+post-completion export engagement, repeat use, trial entitlement activation, and request submission
+are server-authored. `checkout_start` is reserved in the schema but rejected during this
+no-provider cohort.
+
+The funnel readback groups authenticated `signup` actors by content-safe acquisition source and
+computes nearest-rank p50/p90 seconds from each actor's first `signup` to that same actor's first
+post-completion engagement with a qualifying comparison they requested. It returns the sample size
+and signed-up actors excluded for missing activation; a percentile without its numerator and
+exclusions is not acceptance evidence. Anonymous visits are not inferred from the authenticated
+`landing` event.
+
+When the pilot is enabled, run preflight and creation require active workspace access and a
+membership count within the entitlement's seat limit. Cancellation, history, result reads, and
+exports remain accessible after expiry or cancellation. This preserves evidence and keeps plan
+enforcement server-authoritative. The dashboard's access card is a readback of this state, not the
+authority. PostgreSQL run admission and commercial mutations serialize on the workspace row and
+revalidate active membership and role inside the locked transaction. Commercial history endpoints
+return at most the newest 100 rows; funnel aggregation still uses the complete workspace history.
+
+Treat the following proof layers separately:
+
+- schema, route, dashboard, and configuration existence is source proof;
+- passing local tests and local browser flows is local proof;
+- a remote URL and deployment identifier are hosted proof;
+- a real login/logout and two-workspace denial journey are identity-provider proof;
+- restart persistence plus backup/restore is managed-database proof;
+- a submitted request is commercial-intent evidence, not qualification, entitlement, or payment;
+- no payment-provider or live-money proof exists in this cohort.
+
 ## Health and recovery
 
 - `/health/live` proves only that the API process answers.
 - `/health/ready` proves database and migration readiness plus local executor state.
+- `/metrics` remains open only in local mode. Shared OIDC mode fails closed until the API receives
+  `EVALFORGE_METRICS_BEARER_TOKEN`, then requires the exact Bearer token. Never bind that server
+  secret into the dashboard service.
 - In `api_only`, readiness deliberately reports the external worker as unobserved.
 - `/_stcore/health` proves only the Streamlit process answers.
 - `/api/v1/capabilities` reports safe auth, provider, disclosure, limit, and execution state.
@@ -275,6 +357,26 @@ to the plaintext Compose service name. The shared identity environment also pass
 API process so production OIDC validation cannot fall back to a loopback HTTP default. The
 automated contract covers both image builds, fail-closed startup contracts, and configuration
 validation. It does not claim a Compose runtime with a real IdP, hosted TLS, or production readback.
+
+### Render Blueprint reference topology
+
+[`render.yaml`](../render.yaml) is an intended pilot topology, not deployment evidence. It declares:
+
+- an API web service built from `Dockerfile.api`, with `/health/ready`, `api_only` execution, and
+  `evalforge migrate` as the pre-deploy command;
+- a dashboard web service built from `Dockerfile.dashboard`, with `/_stcore/health` and the
+  environment-to-temporary-file OAuth launcher path;
+- a dedicated `database_worker` process built from the API image;
+- a private-network PostgreSQL 17 database; and
+- explicit `sync: false` bindings for public URLs, allowed hosts/origins, OIDC configuration, and
+  dashboard OAuth credentials, plus an API-only metrics Bearer token.
+
+The Blueprint deliberately keeps real model-provider calls disabled and uses the pending team-pilot
+request path with `live_money=false`. Before creation, review service names, region, plans, public
+URLs, CORS origins, trusted hosts, issuer/audience/JWKS values, dashboard metadata URL, and all
+secret bindings. Render creation, build/deploy identifiers, HTTPS readback, real OIDC, remote worker
+observation, restart persistence, backup/restore, alerts, and rollback must each be captured as
+separate hosted evidence. The presence or static validation of `render.yaml` proves none of them.
 
 ## Release and production boundary
 

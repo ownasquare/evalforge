@@ -10,6 +10,7 @@ from fastapi import Depends, Header, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from evalforge.commercial import require_run_entitlement
 from evalforge.container import AppContainer
 from evalforge.evaluation.service import EvaluationService
 from evalforge.models import RecordStatus, User, Workspace, WorkspaceMembership
@@ -135,6 +136,16 @@ def require_editor(
     return require_role(context, WorkspaceRole.EDITOR)
 
 
+def require_run_entitled_editor(
+    context: Annotated[WorkspaceContext, Depends(require_editor)],
+    session: Annotated[Session, Depends(get_session)],
+    container: Annotated[AppContainer, Depends(get_container)],
+) -> WorkspaceContext:
+    """Authorize an editor and enforce access only for hosted pilot run starts."""
+
+    return require_run_entitlement(session, context, container.settings)
+
+
 def require_admin(
     context: Annotated[WorkspaceContext, Depends(get_workspace_context)],
 ) -> WorkspaceContext:
@@ -154,5 +165,9 @@ PrincipalDep = Annotated[AuthenticatedPrincipal, Depends(resolve_principal_user)
 WorkspaceDep = Annotated[WorkspaceContext, Depends(get_workspace_context)]
 ViewerWorkspaceDep = Annotated[WorkspaceContext, Depends(require_viewer)]
 EditorWorkspaceDep = Annotated[WorkspaceContext, Depends(require_editor)]
+RunEntitledEditorWorkspaceDep = Annotated[
+    WorkspaceContext,
+    Depends(require_run_entitled_editor),
+]
 AdminWorkspaceDep = Annotated[WorkspaceContext, Depends(require_admin)]
 OwnerWorkspaceDep = Annotated[WorkspaceContext, Depends(require_owner)]

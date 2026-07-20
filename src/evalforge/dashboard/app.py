@@ -49,6 +49,7 @@ def main() -> None:
     )
     apply_theme()
     initialize_state()
+    state.commercial_acquisition_source()
 
     try:
         auth_config = configured_auth()
@@ -66,6 +67,7 @@ def main() -> None:
         state.sync_identity(context.identity_fingerprint)
         configure_client(identity_fingerprint=context.identity_fingerprint)
 
+    _record_commercial_entry_events()
     _render_workspace(auth_config)
 
 
@@ -308,6 +310,40 @@ def _render_api_health() -> None:
     except ApiError:
         st.caption("Connection needs attention")
         render_status_badge("offline", prefix="API")
+
+
+def _record_commercial_entry_events() -> None:
+    """Capture content-free pilot entry events without blocking the workbench."""
+
+    api = get_client()
+    try:
+        capabilities = api.capabilities()
+    except ApiError:
+        return
+    commercial = capabilities.get("commercial")
+    if not isinstance(commercial, dict):
+        return
+    if commercial.get("pilot_enabled") is not True or commercial.get("hosted") is not True:
+        return
+    acquisition_source = state.commercial_acquisition_source()
+    for name, once_per_identity in (("landing", False), ("signup", True)):
+        idempotency_key = state.commercial_event_key(
+            name,
+            once_per_identity=once_per_identity,
+        )
+        if state.commercial_event_recorded(idempotency_key):
+            continue
+        try:
+            api.record_activation_event(
+                name,
+                source=acquisition_source,
+                surface="dashboard",
+                idempotency_key=idempotency_key,
+            )
+        except ApiError:
+            state.mark_commercial_tracking_unavailable()
+            return
+        state.mark_commercial_event_recorded(idempotency_key)
 
 
 if __name__ == "__main__":

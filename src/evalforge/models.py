@@ -121,6 +121,46 @@ class RecordStatus(StrEnum):
     SUSPENDED = "suspended"
 
 
+class PlanCode(StrEnum):
+    OPEN_SOURCE = "open_source"
+    HOSTED_TRIAL = "hosted_trial"
+    TEAM = "team"
+
+
+class EntitlementStatus(StrEnum):
+    TRIALING = "trialing"
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    CANCELED = "canceled"
+
+
+class TeamPilotRequestStatus(StrEnum):
+    PENDING = "pending"
+    CANCELED = "canceled"
+    QUALIFIED = "qualified"
+    DECLINED = "declined"
+
+
+class EvaluationFrequency(StrEnum):
+    WEEKLY = "weekly"
+    SEVERAL_TIMES_WEEK = "several_times_week"
+    DAILY = "daily"
+    RELEASE_DRIVEN = "release_driven"
+
+
+class ActivationEventName(StrEnum):
+    LANDING = "landing"
+    SIGNUP = "signup"
+    CORE_JOB_START = "core_job_start"
+    EVALUATION_COMPLETE = "evaluation_complete"
+    RESULT_ENGAGEMENT = "result_engagement"
+    SECOND_USE = "second_use"
+    UPGRADE_VIEW = "upgrade_view"
+    CHECKOUT_START = "checkout_start"
+    ENTITLEMENT_ACTIVATION = "entitlement_activation"
+    TEAM_REQUEST_SUBMITTED = "team_request_submitted"
+
+
 class InvalidStateTransition(ValueError):
     """Raised when an evaluator attempts an invalid lifecycle transition."""
 
@@ -304,6 +344,172 @@ class AuditEvent(UuidPrimaryKeyMixin, Base):
     resource_id: Mapped[str | None] = mapped_column(String(100))
     outcome: Mapped[str] = mapped_column(String(30), nullable=False)
     request_id: Mapped[str | None] = mapped_column(String(255))
+    metadata_json: Mapped[JSONDict] = mapped_column(
+        "metadata", MutableDict.as_mutable(JSON), default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class WorkspaceEntitlement(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    """Server-authoritative current commercial access for one workspace."""
+
+    __tablename__ = "workspace_entitlements"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", name="uq_workspace_entitlements_workspace"),
+        CheckConstraint("seat_limit >= 1", name="ck_workspace_entitlements_seat_limit"),
+        Index("ix_workspace_entitlements_status_period", "status", "current_period_end"),
+    )
+
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False
+    )
+    plan_code: Mapped[PlanCode] = mapped_column(
+        SQLAlchemyEnum(
+            PlanCode,
+            values_callable=_enum_values,
+            native_enum=False,
+            create_constraint=True,
+            name="workspace_plan_code",
+        ),
+        nullable=False,
+    )
+    status: Mapped[EntitlementStatus] = mapped_column(
+        SQLAlchemyEnum(
+            EntitlementStatus,
+            values_callable=_enum_values,
+            native_enum=False,
+            create_constraint=True,
+            name="workspace_entitlement_status",
+        ),
+        nullable=False,
+    )
+    seat_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    current_period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    activated_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class BillingEvent(UuidPrimaryKeyMixin, Base):
+    """Append-only, replay-safe commercial state transition evidence."""
+
+    __tablename__ = "billing_events"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_event_id", name="uq_billing_events_provider_event"),
+        Index("ix_billing_events_workspace_created", "workspace_id", "created_at"),
+    )
+
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    metadata_json: Mapped[JSONDict] = mapped_column(
+        "metadata", MutableDict.as_mutable(JSON), default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
+class TeamPilotRequest(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    """A bounded, non-financial request for a qualified team pilot."""
+
+    __tablename__ = "team_pilot_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "idempotency_key", name="uq_team_pilot_requests_idempotency"
+        ),
+        CheckConstraint(
+            "requested_seats >= 2 AND requested_seats <= 250",
+            name="ck_team_pilot_requests_requested_seats",
+        ),
+        Index("ix_team_pilot_requests_workspace_status", "workspace_id", "status"),
+        Index(
+            "ux_team_pilot_requests_workspace_pending",
+            "workspace_id",
+            unique=True,
+            sqlite_where=text("status = 'pending'"),
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False
+    )
+    requested_by_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    requested_seats: Mapped[int] = mapped_column(Integer, nullable=False)
+    evaluation_frequency: Mapped[EvaluationFrequency] = mapped_column(
+        SQLAlchemyEnum(
+            EvaluationFrequency,
+            values_callable=_enum_values,
+            native_enum=False,
+            create_constraint=True,
+            name="team_pilot_evaluation_frequency",
+        ),
+        nullable=False,
+    )
+    security_review_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[TeamPilotRequestStatus] = mapped_column(
+        SQLAlchemyEnum(
+            TeamPilotRequestStatus,
+            values_callable=_enum_values,
+            native_enum=False,
+            create_constraint=True,
+            name="team_pilot_request_status",
+        ),
+        default=TeamPilotRequestStatus.PENDING,
+        nullable=False,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ActivationEvent(UuidPrimaryKeyMixin, Base):
+    """Append-only, content-minimized pilot funnel event."""
+
+    __tablename__ = "activation_events"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "event_key", name="uq_activation_events_event_key"),
+        Index("ix_activation_events_workspace_name_created", "workspace_id", "name", "created_at"),
+        ForeignKeyConstraint(
+            ["workspace_id", "run_id"],
+            ["evaluation_runs.workspace_id", "evaluation_runs.id"],
+            name="fk_activation_events_workspace_run",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    name: Mapped[ActivationEventName] = mapped_column(
+        SQLAlchemyEnum(
+            ActivationEventName,
+            values_callable=_enum_values,
+            native_enum=False,
+            create_constraint=True,
+            name="activation_event_name",
+        ),
+        nullable=False,
+    )
+    event_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String(36))
     metadata_json: Mapped[JSONDict] = mapped_column(
         "metadata", MutableDict.as_mutable(JSON), default=dict, nullable=False
     )
@@ -1488,6 +1694,14 @@ def _reject_calibration_mutation(
     raise ImmutableProvenanceError("calibration reports are append-only")
 
 
+def _reject_commercial_event_mutation(
+    _mapper: Any,
+    _connection: Any,
+    _target: BillingEvent | ActivationEvent,
+) -> None:
+    raise ImmutableProvenanceError("commercial evidence events are append-only")
+
+
 for _model in _IMMUTABLE_PROVENANCE_FIELDS:
     event.listen(_model, "before_update", _reject_provenance_update)
 
@@ -1495,3 +1709,7 @@ event.listen(AuditEvent, "before_update", _reject_audit_mutation)
 event.listen(AuditEvent, "before_delete", _reject_audit_mutation)
 event.listen(CalibrationReport, "before_update", _reject_calibration_mutation)
 event.listen(CalibrationReport, "before_delete", _reject_calibration_mutation)
+event.listen(BillingEvent, "before_update", _reject_commercial_event_mutation)
+event.listen(BillingEvent, "before_delete", _reject_commercial_event_mutation)
+event.listen(ActivationEvent, "before_update", _reject_commercial_event_mutation)
+event.listen(ActivationEvent, "before_delete", _reject_commercial_event_mutation)

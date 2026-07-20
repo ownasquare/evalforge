@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Response, status
+import secrets
+from typing import Annotated
+
+from fastapi import APIRouter, Header, HTTPException, Response, status
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from evalforge.api.dependencies import ContainerDep, ViewerWorkspaceDep
@@ -46,7 +49,24 @@ def ready(container: ContainerDep, response: Response) -> dict[str, object]:
 
 
 @router.get("/metrics", include_in_schema=False)
-def metrics() -> Response:
+def metrics(
+    container: ContainerDep,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> Response:
+    configured = container.settings.metrics_bearer_token
+    if configured is None and container.settings.auth_mode == "oidc":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Metrics are unavailable until backend-only authentication is configured.",
+        )
+    if configured is not None:
+        expected = f"Bearer {configured.get_secret_value()}"
+        if authorization is None or not secrets.compare_digest(authorization, expected):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Metrics authentication is required.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -81,6 +101,14 @@ def capabilities(container: ContainerDep, _workspace: ViewerWorkspaceDep) -> dic
             "external_data_transfer_consent_required": True,
             "user_spend_limit_required": True,
             "spend_limit_basis": "known_price_preflight_estimate",
+        },
+        "commercial": {
+            "pilot_enabled": settings.commercial_pilot_enabled,
+            "hosted": settings.auth_mode == "oidc",
+            "trial_days": settings.hosted_trial_days,
+            "trial_seat_limit": settings.hosted_trial_seat_limit,
+            "payment_path": "qualified_team_request",
+            "live_money": False,
         },
         "proof": {
             "demo_mode": "deterministic_fixture_backed",

@@ -31,6 +31,27 @@ For a guided first run, see [Getting started](docs/getting-started.md).
 For an immutable source snapshot and verified package artifacts, use the
 [v0.3.0 public-beta release](https://github.com/ownasquare/evalforge/releases/tag/v0.3.0).
 
+## Open source first, hosted pilot second
+
+The complete credential-free workflow remains MIT-licensed and self-hostable. You can run it on
+your own machine or infrastructure, keep your own persistence, and bring your own approved model
+providers. The commercialization pilot does not remove, gate, or weaken that path.
+
+EvalForge is also preparing an optional hosted team pilot for small AI engineering and product
+teams that want a shared workspace without operating it themselves:
+
+| Community self-hosted | Hosted team pilot |
+| --- | --- |
+| Free and open source | Invitation-based pilot |
+| You operate the application and persistence | Managed persistence and workspace operations |
+| Complete deterministic workflow and exports | Shared team access and pilot support |
+| Available now through this repository | Begins with a pending qualification request; availability is not yet a production claim |
+
+The first cohort does not use Stripe or collect a card. A team request is an expression of interest,
+not checkout, payment, subscription activation, or proof that a hosted environment is live. See the
+[hosted pilot offer](docs/commercialization/2026-07-20-hosted-pilot-offer-and-execution.md) and
+[current proof boundaries](docs/commercialization/2026-07-20-hosted-blocker-audit.md).
+
 ## The core workflow
 
 1. **Choose a test set.** Start with a sample benchmark or import JSON/CSV cases.
@@ -106,7 +127,9 @@ into a source build. See [Extending EvalForge](docs/extending.md) and the tested
 EvalForge is beta software. The deterministic local workflow, SQLite and PostgreSQL persistence,
 provider contracts, evidence exports, the desktop workflow, and key mobile layouts are covered by
 automated tests.
-Hosted deployment, a specific identity provider, and paid-provider behavior still require your own
-environment-specific validation.
+The source now includes a narrow hosted-pilot contract for trials, workspace entitlements, team
+requests, append-only commercial events, and an activation funnel. Hosted deployment, a specific
+identity provider, managed-database recovery, external-user activation, and paid-provider behavior
+still require separate environment-specific proof.
 
 Licensed under the [MIT License](LICENSE). See the [changelog](CHANGELOG.md) for release notes.

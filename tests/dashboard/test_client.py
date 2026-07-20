@@ -563,3 +563,109 @@ def test_client_treats_a_missing_live_token_as_reauthentication() -> None:
     assert captured.value.code == "reauthentication_required"
     assert unauthorized_events == ["reset"]
     client.close()
+
+
+def test_commercial_client_uses_server_authoritative_routes_and_idempotency() -> None:
+    observed: list[tuple[str, str, str | None, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = request.read()
+        observed.append(
+            (
+                request.method,
+                request.url.path,
+                request.headers.get("idempotency-key"),
+                httpx.Response(200, content=payload).json() if payload else None,
+            )
+        )
+        return httpx.Response(200, json={"id": "commercial-resource"})
+
+    with ApiClient("http://api", transport=httpx.MockTransport(handler)) as client:
+        client.commercial_plans()
+        client.commercial_entitlement()
+        client.start_hosted_trial(idempotency_key="trial-start-1")
+        client.cancel_hosted_trial(idempotency_key="trial-cancel-1")
+        client.team_pilot_requests()
+        client.create_team_pilot_request(
+            {
+                "requested_seats": 5,
+                "evaluation_frequency": "weekly",
+                "security_review_required": False,
+            },
+            idempotency_key="team-request-1",
+        )
+        client.cancel_team_pilot_request(
+            "request-1",
+            idempotency_key="team-cancel-1",
+        )
+        client.commercial_billing_events()
+        client.commercial_funnel()
+        client.record_activation_event(
+            "upgrade_view",
+            source="direct",
+            surface="settings",
+            idempotency_key="upgrade-view-1",
+        )
+
+    assert [(method, path, key) for method, path, key, _ in observed] == [
+        ("GET", "/api/v1/commercial/plans", None),
+        ("GET", "/api/v1/commercial/entitlement", None),
+        ("POST", "/api/v1/commercial/trial", "trial-start-1"),
+        ("POST", "/api/v1/commercial/trial/cancel", "trial-cancel-1"),
+        ("GET", "/api/v1/commercial/team-requests", None),
+        ("POST", "/api/v1/commercial/team-requests", "team-request-1"),
+        (
+            "POST",
+            "/api/v1/commercial/team-requests/request-1/cancel",
+            "team-cancel-1",
+        ),
+        ("GET", "/api/v1/commercial/billing-events", None),
+        ("GET", "/api/v1/commercial/funnel", None),
+        ("POST", "/api/v1/commercial/events", "upgrade-view-1"),
+    ]
+    assert observed[5][3] == {
+        "requested_seats": 5,
+        "evaluation_frequency": "weekly",
+        "security_review_required": False,
+    }
+    assert observed[-1][3] == {
+        "name": "upgrade_view",
+        "source": "direct",
+        "surface": "settings",
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "source", "surface", "idempotency_key"),
+    [
+        ("result_engagement", "direct", "settings", "event-1"),
+        ("checkout_start", "direct", "settings", "event-1"),
+        ("upgrade_view", "not a slug", "settings", "event-1"),
+        ("upgrade_view", "direct", "settings", " event-1"),
+    ],
+)
+def test_commercial_client_rejects_unsafe_event_inputs_before_request(
+    name: str,
+    source: str,
+    surface: str,
+    idempotency_key: str,
+) -> None:
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={})
+
+    with (
+        ApiClient("http://api", transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(ValueError),
+    ):
+        client.record_activation_event(
+            name,
+            source=source,
+            surface=surface,
+            idempotency_key=idempotency_key,
+        )
+
+    assert calls == 0

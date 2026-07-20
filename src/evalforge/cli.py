@@ -129,8 +129,16 @@ def _validated_workspace_option(settings: Settings, workspace_slug: str | None) 
     return None
 
 
-def _workspace_by_slug(session: Session, workspace_slug: str) -> Workspace:
-    workspace = session.scalar(select(Workspace).where(Workspace.slug == workspace_slug))
+def _workspace_by_slug(
+    session: Session,
+    workspace_slug: str,
+    *,
+    for_update: bool = False,
+) -> Workspace:
+    statement = select(Workspace).where(Workspace.slug == workspace_slug)
+    if for_update:
+        statement = statement.with_for_update()
+    workspace = session.scalar(statement)
     if workspace is None:
         raise typer.BadParameter("Workspace was not found.")
     return workspace
@@ -238,6 +246,35 @@ def seed(
         typer.echo(json.dumps({"status": "ready", "counts": counts, **manifest}, indent=2))
     finally:
         engine.dispose()
+
+
+@app.command()
+def migrate() -> None:
+    """Apply the database migration chain without starting an application process."""
+
+    settings = get_settings()
+    try:
+        apply_migrations(settings)
+        engine = create_database_engine(settings)
+        try:
+            database_ready = check_database_readiness(engine)
+        finally:
+            engine.dispose()
+    except Exception:
+        typer.echo("EvalForge database migration failed.", err=True)
+        raise typer.Exit(code=1) from None
+    if not database_ready:
+        typer.echo("EvalForge database migration did not reach the expected schema.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ready",
+                "database_backend": settings.database_backend,
+            },
+            indent=2,
+        )
+    )
 
 
 @app.command()
@@ -447,7 +484,7 @@ def membership_provision(
     )
 
     with _operator_session(settings) as session:
-        workspace = _workspace_by_slug(session, normalized_workspace)
+        workspace = _workspace_by_slug(session, normalized_workspace, for_update=True)
         if workspace.status != RecordStatus.ACTIVE:
             raise typer.BadParameter("Workspace is not active.")
 
@@ -542,7 +579,7 @@ def membership_revoke(
     normalized_issuer = _validated_issuer(settings, issuer)
     normalized_subject = _validated_text(subject, label="Subject", max_length=500)
     with _operator_session(settings) as session:
-        workspace = _workspace_by_slug(session, normalized_workspace)
+        workspace = _workspace_by_slug(session, normalized_workspace, for_update=True)
         membership = session.scalar(
             select(WorkspaceMembership)
             .join(User, User.id == WorkspaceMembership.user_id)
@@ -591,7 +628,9 @@ def worker() -> None:
     )
 
     async def serve() -> None:
-        container = build_container(settings, migrate=True)
+        # Hosted workers must never race the API's single pre-deploy migration authority.
+        # Local operators retain the existing auto-migrate default when explicitly enabled.
+        container = build_container(settings, migrate=settings.auto_migrate)
         try:
             await container.executor.start()
             typer.echo("EvalForge database worker is ready.")

@@ -760,6 +760,28 @@ def test_calibration_migration_upgrades_from_0004_and_refuses_evidence_loss(
     finally:
         engine.dispose()
 
+    # A one-step rollback removes only the empty commercial schema and preserves 0005 evidence.
+    command.downgrade(configuration, "0005_calibration_reports")
+    engine = create_database_engine(database_url)
+    try:
+        table_names = set(inspect(engine).get_table_names())
+        assert "calibration_reports" in table_names
+        assert "activation_events" not in table_names
+        with engine.connect() as connection:
+            assert (
+                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == "0005_calibration_reports"
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(configuration, "head")
+    engine = create_database_engine(database_url)
+    try:
+        assert check_database_readiness(engine) is True
+    finally:
+        engine.dispose()
+
 
 @pytest.mark.integration
 def test_second_migration_preserves_populated_foreign_key_parents(

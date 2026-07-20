@@ -16,6 +16,7 @@ from evalforge import __version__
 from evalforge.api.routes import (
     analytics,
     calibrations,
+    commercial,
     datasets,
     health,
     models,
@@ -202,6 +203,7 @@ def create_app(
 
     application.include_router(health.router)
     application.include_router(session.router, prefix="/api/v1")
+    application.include_router(commercial.router, prefix="/api/v1")
     application.include_router(datasets.router, prefix="/api/v1")
     application.include_router(prompts.router, prefix="/api/v1")
     application.include_router(models.router, prefix="/api/v1")

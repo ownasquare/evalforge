@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ JsonObject: TypeAlias = dict[str, Any]
 QueryValue: TypeAlias = str | int | float | bool | Sequence[str]
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
+_CLIENT_ACTIVATION_EVENTS = frozenset({"landing", "signup", "upgrade_view"})
+_EVENT_SLUG_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 
 
 class ApiError(RuntimeError):
@@ -198,6 +201,86 @@ class ApiClient:
 
     def capabilities(self) -> JsonObject:
         return self._get_object("/api/v1/capabilities")
+
+    def commercial_plans(self) -> JsonObject | list[Any]:
+        """Return the server-published OSS and hosted pilot offer."""
+
+        return self._get_json("/api/v1/commercial/plans", cache_ttl=10.0)
+
+    def commercial_entitlement(self) -> JsonObject:
+        """Read the active workspace's server-authoritative access state."""
+
+        return self._get_object("/api/v1/commercial/entitlement", cache_ttl=1.0)
+
+    def start_hosted_trial(self, *, idempotency_key: str) -> JsonObject:
+        return self._commercial_mutation(
+            "/api/v1/commercial/trial",
+            idempotency_key=idempotency_key,
+        )
+
+    def cancel_hosted_trial(self, *, idempotency_key: str) -> JsonObject:
+        return self._commercial_mutation(
+            "/api/v1/commercial/trial/cancel",
+            idempotency_key=idempotency_key,
+        )
+
+    def team_pilot_requests(self) -> JsonObject | list[Any]:
+        return self._get_json("/api/v1/commercial/team-requests", cache_ttl=1.0)
+
+    def create_team_pilot_request(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> JsonObject:
+        return self._commercial_mutation(
+            "/api/v1/commercial/team-requests",
+            idempotency_key=idempotency_key,
+            json_payload=payload,
+        )
+
+    def cancel_team_pilot_request(
+        self,
+        team_request_id: str,
+        *,
+        idempotency_key: str,
+    ) -> JsonObject:
+        request_id = _required_form_value(team_request_id, name="team request ID")
+        return self._commercial_mutation(
+            f"/api/v1/commercial/team-requests/{request_id}/cancel",
+            idempotency_key=idempotency_key,
+        )
+
+    def commercial_billing_events(self) -> JsonObject | list[Any]:
+        return self._get_json("/api/v1/commercial/billing-events", cache_ttl=1.0)
+
+    def commercial_funnel(self) -> JsonObject:
+        return self._get_object("/api/v1/commercial/funnel", cache_ttl=1.0)
+
+    def record_activation_event(
+        self,
+        name: str,
+        *,
+        source: str,
+        surface: str,
+        idempotency_key: str,
+    ) -> JsonObject:
+        """Record only the small, content-free client event contract."""
+
+        if name not in _CLIENT_ACTIVATION_EVENTS:
+            raise ValueError("activation event name is not client-recordable")
+        safe_source = _event_slug(source, name="event source")
+        safe_surface = _event_slug(surface, name="event surface")
+        payload: dict[str, Any] = {
+            "name": name,
+            "source": safe_source,
+            "surface": safe_surface,
+        }
+        return self._commercial_mutation(
+            "/api/v1/commercial/events",
+            idempotency_key=idempotency_key,
+            json_payload=payload,
+        )
 
     def session(self) -> JsonObject:
         return self._get_object("/api/v1/session", cache_ttl=1.0)
@@ -466,6 +549,21 @@ class ApiClient:
         )
         return response.content
 
+    def _commercial_mutation(
+        self,
+        path: str,
+        *,
+        idempotency_key: str,
+        json_payload: Mapping[str, Any] | None = None,
+    ) -> JsonObject:
+        key = _validated_idempotency_key(idempotency_key)
+        return self._request_object(
+            "POST",
+            path,
+            json_payload=json_payload,
+            headers={"Idempotency-Key": key},
+        )
+
     def _get_object(
         self,
         path: str,
@@ -730,6 +828,25 @@ def _expect_object(payload: Any) -> JsonObject:
 def _required_form_value(value: str, *, name: str) -> str:
     candidate = value.strip()
     if not candidate or len(candidate) > 512 or "\x00" in candidate:
+        raise ValueError(f"{name} has an invalid format")
+    return candidate
+
+
+def _validated_idempotency_key(value: str) -> str:
+    candidate = value.strip()
+    if (
+        not candidate
+        or len(candidate) > 128
+        or candidate != value
+        or any(ord(character) < 32 or ord(character) == 127 for character in candidate)
+    ):
+        raise ValueError("idempotency_key has an invalid format")
+    return candidate
+
+
+def _event_slug(value: str, *, name: str) -> str:
+    candidate = value.strip()
+    if len(candidate) > 64 or not _EVENT_SLUG_PATTERN.fullmatch(candidate):
         raise ValueError(f"{name} has an invalid format")
     return candidate
 

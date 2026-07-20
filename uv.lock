@@ -403,6 +403,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-socket" },
+    { name = "pyyaml" },
     { name = "respx" },
     { name = "ruff" },
 ]
@@ -444,6 +445,7 @@ dev = [
     { name = "pytest-asyncio", specifier = "==1.4.0" },
     { name = "pytest-cov", specifier = ">=6.2,<8" },
     { name = "pytest-socket", specifier = ">=0.7,<1" },
+    { name = "pyyaml", specifier = ">=6,<7" },
     { name = "respx", specifier = ">=0.22,<1" },
     { name = "ruff", specifier = ">=0.13,<1" },
 ]
