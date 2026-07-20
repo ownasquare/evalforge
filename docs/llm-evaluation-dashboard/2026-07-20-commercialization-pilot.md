@@ -78,6 +78,15 @@ live-provider latency/cost, or production proof.
 | Patch integrity | `git diff --check` passed |
 | Browser console | 0 warnings, 0 errors |
 
+## Commit and push evidence
+
+- Validated implementation commit: `73d27f77cd097040b35649b1f36b75edf391b107` (`Add EvalForge commercialization pilot`).
+- Remote: `origin` (`ownasquare/evalforge`).
+- Published branch: `agent/own-a-square-commercialization-pilot`.
+- Draft review: [pull request #11](https://github.com/ownasquare/evalforge/pull/11), targeting `main`.
+- Initial remote branch readback matched the full implementation commit before this documentation-only
+  evidence refresh.
+
 The four PostgreSQL checks require an explicit disposable PostgreSQL test URL. They were not relabeled
 as passing. The hosted Playwright tests require a deployed HTTPS dashboard/API, two live identities,
 two workspaces, private token files, separate authenticated-app and IdP-only browser states, and an
