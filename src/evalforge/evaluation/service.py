@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm.exc import StaleDataError
 
 from evalforge.audit import AuditRecorder
+from evalforge.commercial import ActivationRecorder, require_run_entitlement
 from evalforge.config import Settings
 from evalforge.database import SessionFactory, session_scope
 from evalforge.errors import CapabilityError, ConflictError, LimitError, NotFoundError
@@ -44,6 +45,7 @@ from evalforge.evaluation.types import (
     MetricResult as EvaluationMetricResult,
 )
 from evalforge.models import (
+    ActivationEventName,
     ApiMode,
     Dataset,
     EvaluationResult,
@@ -413,6 +415,7 @@ class EvaluationService:
                     return existing
         try:
             with session_scope(self.session_factory) as session:
+                require_run_entitlement(session, context, self.settings, lock=True)
                 preflight_snapshot, dataset, prompts, models = self._preflight_in_session(
                     prepared, session, context, lock=True
                 )
@@ -439,6 +442,35 @@ class EvaluationService:
                         "spend_limit_micro_usd": preflight_snapshot.get("spend_limit_micro_usd"),
                     },
                 )
+                activation = ActivationRecorder(session)
+                activation.record(
+                    workspace_id=context.workspace_id,
+                    actor_user_id=context.user_id,
+                    name=ActivationEventName.CORE_JOB_START,
+                    event_key=f"core-job-start:{run.id}",
+                    source="api",
+                    run_id=run.id,
+                    metadata={"surface": "api"},
+                )
+                previous_run_id = session.scalar(
+                    select(EvaluationRun.id)
+                    .where(
+                        EvaluationRun.workspace_id == context.workspace_id,
+                        EvaluationRun.requested_by_user_id == context.user_id,
+                        EvaluationRun.id != run.id,
+                    )
+                    .limit(1)
+                )
+                if previous_run_id is not None:
+                    activation.record(
+                        workspace_id=context.workspace_id,
+                        actor_user_id=context.user_id,
+                        name=ActivationEventName.SECOND_USE,
+                        event_key=f"second-use:{run.id}",
+                        source="api",
+                        run_id=run.id,
+                        metadata={"surface": "api"},
+                    )
                 return run
         except RepositoryConflictError as exc:
             if prepared.idempotency_key is not None:
@@ -1147,6 +1179,24 @@ class EvaluationService:
                 )
             else:
                 run.transition_to(RunStatus.COMPLETED, reason="run completed")
+            successful_candidates = sum(
+                1
+                for candidate in run.candidates
+                if counts.get(candidate.id, {}).get(ResultStatus.COMPLETED, 0) > 0
+            )
+            if (
+                run.status in {RunStatus.COMPLETED, RunStatus.COMPLETED_WITH_ERRORS}
+                and successful_candidates >= 2
+            ):
+                ActivationRecorder(session).record(
+                    workspace_id=run.workspace_id,
+                    actor_user_id=run.requested_by_user_id,
+                    name=ActivationEventName.EVALUATION_COMPLETE,
+                    event_key=f"evaluation-complete:{run.id}",
+                    source="worker",
+                    run_id=run.id,
+                    metadata={"surface": "worker"},
+                )
             session.flush()
 
     def _fail_run_setup(self, claim: LeaseClaim, error: Exception) -> None:

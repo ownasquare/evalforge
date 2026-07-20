@@ -7,6 +7,7 @@ Revises: 0001_initial_schema
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0002_preflight_context_cost_ack"

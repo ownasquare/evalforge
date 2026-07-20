@@ -5,7 +5,6 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
@@ -14,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
+from alembic import command
 from evalforge.config import Settings, get_settings
 from evalforge.container import apply_migrations
 from evalforge.database import (
@@ -756,6 +756,28 @@ def test_calibration_migration_upgrades_from_0004_and_refuses_evidence_loss(
     engine = create_database_engine(database_url)
     try:
         assert "calibration_reports" in inspect(engine).get_table_names()
+        assert check_database_readiness(engine) is True
+    finally:
+        engine.dispose()
+
+    # A one-step rollback removes only the empty commercial schema and preserves 0005 evidence.
+    command.downgrade(configuration, "0005_calibration_reports")
+    engine = create_database_engine(database_url)
+    try:
+        table_names = set(inspect(engine).get_table_names())
+        assert "calibration_reports" in table_names
+        assert "activation_events" not in table_names
+        with engine.connect() as connection:
+            assert (
+                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == "0005_calibration_reports"
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(configuration, "head")
+    engine = create_database_engine(database_url)
+    try:
         assert check_database_readiness(engine) is True
     finally:
         engine.dispose()

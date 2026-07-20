@@ -157,6 +157,8 @@ def test_demo_child_environments_share_the_bound_origin_and_hide_ui_secrets(
         "EVALFORGE_API_URL": "http://127.0.0.1:8000",
         "EVALFORGE_OPENAI_API_KEY": "backend-only-openai",
         "EVALFORGE_COMPATIBLE_API_KEY": "backend-only-compatible",
+        "EVALFORGE_METRICS_BEARER_TOKEN": "backend-only-metrics",
+        "EVALFORGE_DATABASE_URL": "postgresql+psycopg://user:secret@db.test/evalforge",
     }
     api_url = demo._api_base_url(settings)
 
@@ -178,6 +180,8 @@ def test_demo_child_environments_share_the_bound_origin_and_hide_ui_secrets(
     assert dashboard_environment["EVALFORGE_API_URL"] == "http://127.0.0.1:18322"
     assert dashboard_environment["EVALFORGE_OPENAI_API_KEY"].strip() == ""
     assert dashboard_environment["EVALFORGE_COMPATIBLE_API_KEY"].strip() == ""
+    assert dashboard_environment["EVALFORGE_METRICS_BEARER_TOKEN"].strip() == ""
+    assert dashboard_environment["EVALFORGE_DATABASE_URL"] == "sqlite+pysqlite:///:memory:"
     assert dashboard_environment["KEEP_ME"] == "yes"
 
 
@@ -188,7 +192,10 @@ def test_standalone_dashboard_environment_hides_env_and_dotenv_provider_secrets(
     settings = _settings(tmp_path)
     dotenv = tmp_path / ".env"
     dotenv.write_text(
-        "EVALFORGE_OPENAI_API_KEY=dotenv-openai\nEVALFORGE_COMPATIBLE_API_KEY=dotenv-compatible\n",
+        "EVALFORGE_OPENAI_API_KEY=dotenv-openai\n"
+        "EVALFORGE_COMPATIBLE_API_KEY=dotenv-compatible\n"
+        "EVALFORGE_METRICS_BEARER_TOKEN=dotenv-metrics\n"
+        "EVALFORGE_DATABASE_URL=postgresql+psycopg://user:dotenv-secret@db.test/evalforge\n",
         encoding="utf-8",
     )
     environment = demo.dashboard_environment(
@@ -196,19 +203,30 @@ def test_standalone_dashboard_environment_hides_env_and_dotenv_provider_secrets(
         base_environment={
             "EVALFORGE_OPENAI_API_KEY": "inherited-openai",
             "EVALFORGE_COMPATIBLE_API_KEY": "inherited-compatible",
+            "EVALFORGE_METRICS_BEARER_TOKEN": "inherited-metrics",
+            "EVALFORGE_DATABASE_URL": "postgresql+psycopg://user:inherited@db.test/evalforge",
         },
     )
 
     assert environment["EVALFORGE_OPENAI_API_KEY"].strip() == ""
     assert environment["EVALFORGE_COMPATIBLE_API_KEY"].strip() == ""
+    assert environment["EVALFORGE_METRICS_BEARER_TOKEN"].strip() == ""
+    assert environment["EVALFORGE_DATABASE_URL"] == "sqlite+pysqlite:///:memory:"
     monkeypatch.setenv("EVALFORGE_OPENAI_API_KEY", environment["EVALFORGE_OPENAI_API_KEY"])
     monkeypatch.setenv(
         "EVALFORGE_COMPATIBLE_API_KEY",
         environment["EVALFORGE_COMPATIBLE_API_KEY"],
     )
+    monkeypatch.setenv(
+        "EVALFORGE_METRICS_BEARER_TOKEN",
+        environment["EVALFORGE_METRICS_BEARER_TOKEN"],
+    )
+    monkeypatch.setenv("EVALFORGE_DATABASE_URL", environment["EVALFORGE_DATABASE_URL"])
     sanitized = Settings(_env_file=dotenv)
     assert sanitized.openai_api_key is None
     assert sanitized.compatible_api_key is None
+    assert sanitized.metrics_bearer_token is None
+    assert sanitized.database_backend == "sqlite"
 
 
 def test_wait_until_ready_retries_until_the_endpoint_is_healthy() -> None:

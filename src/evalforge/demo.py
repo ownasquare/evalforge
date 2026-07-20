@@ -64,6 +64,12 @@ DASHBOARD_PROVIDER_SECRET_KEYS = (
 # Settings ignores truly empty environment values and would then fall back to `.env`.
 # Whitespace is non-empty to the settings source and normalized to `None` by the secret validator.
 _SETTINGS_NONE_OVERRIDE = " "
+DASHBOARD_SERVER_SECRET_OVERRIDES = {
+    **{key: _SETTINGS_NONE_OVERRIDE for key in DASHBOARD_PROVIDER_SECRET_KEYS},
+    "EVALFORGE_METRICS_BEARER_TOKEN": _SETTINGS_NONE_OVERRIDE,
+    # The dashboard is an API client and never needs the server's credential-bearing database URL.
+    "EVALFORGE_DATABASE_URL": "sqlite+pysqlite:///:memory:",
+}
 
 
 def api_command(settings: Settings) -> Command:
@@ -246,8 +252,7 @@ def _demo_environment(
         }
     )
     if dashboard:
-        for key in DASHBOARD_PROVIDER_SECRET_KEYS:
-            environment[key] = _SETTINGS_NONE_OVERRIDE
+        environment.update(DASHBOARD_SERVER_SECRET_OVERRIDES)
     return environment
 
 

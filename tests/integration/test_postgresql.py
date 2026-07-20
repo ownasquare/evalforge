@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Event
 from uuid import UUID, uuid4
 
 import pytest
@@ -16,6 +18,7 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.schema import CreateSchema, DropSchema
 
 from evalforge.api.app import create_app
+from evalforge.commercial import CommercialPilotService, require_run_entitlement
 from evalforge.config import Settings
 from evalforge.container import apply_migrations, build_container
 from evalforge.database import (
@@ -26,7 +29,7 @@ from evalforge.database import (
     session_scope,
 )
 from evalforge.evaluation.leases import LeaseLostError, LeaseManager
-from evalforge.models import EvaluationRun, ExecutionAttempt, RunStatus
+from evalforge.models import EntitlementStatus, EvaluationRun, ExecutionAttempt, RunStatus
 from evalforge.repositories import Repositories
 from evalforge.schemas import EvaluationRunCreate
 from evalforge.security.permissions import local_workspace_context
@@ -318,3 +321,82 @@ def test_postgresql_api_workflow_and_cross_process_cancellation(
             assert cancelled.json()["status"] == "cancelled"
     finally:
         asyncio.run(container.close())
+
+
+def test_postgresql_run_admission_and_trial_cancellation_serialize(
+    postgres_engine: Engine,
+) -> None:
+    database_url = postgres_engine.url.render_as_string(hide_password=False)
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        database_url=database_url,
+        auth_mode="oidc",
+        oidc_issuer="https://identity.postgres.test",
+        oidc_audience="evalforge-api",
+        oidc_jwks_url="https://identity.postgres.test/jwks.json",
+        public_base_url="https://api.postgres.test",
+        commercial_pilot_enabled=True,
+        auto_migrate=False,
+        seed_demo=False,
+    )
+    factory = create_session_factory(postgres_engine)
+    context = local_workspace_context()
+    with session_scope(factory) as session:
+        seed_demo(session, context)
+        repositories = Repositories(session, context)
+        datasets, _ = repositories.datasets.list(limit=1)
+        prompts, _ = repositories.prompts.list(limit=2)
+        models, _ = repositories.models.list(limit=1)
+        request = EvaluationRunCreate(
+            dataset_id=UUID(datasets[0].id),
+            prompt_ids=[UUID(prompt.id) for prompt in prompts],
+            model_ids=[UUID(models[0].id)],
+            name="Serialized commercial admission",
+        )
+        CommercialPilotService(session, context, settings).start_trial(
+            idempotency_key="postgres-serialized-trial",
+            request_id="postgres-test",
+        )
+
+    admission_locked = Event()
+    release_admission = Event()
+
+    def admit_run() -> str:
+        with session_scope(factory) as session:
+            require_run_entitlement(session, context, settings, lock=True)
+            admission_locked.set()
+            assert release_admission.wait(timeout=5)
+            run = Repositories(session, context).runs.create(
+                request,
+                application_version="postgresql-test",
+            )
+            return run.id
+
+    def cancel_trial() -> EntitlementStatus:
+        assert admission_locked.wait(timeout=5)
+        with session_scope(factory) as session:
+            return (
+                CommercialPilotService(session, context, settings)
+                .cancel_trial(
+                    idempotency_key="postgres-serialized-cancel",
+                    request_id="postgres-test",
+                )
+                .status
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        admitted = pool.submit(admit_run)
+        assert admission_locked.wait(timeout=5)
+        canceled = pool.submit(cancel_trial)
+        time.sleep(0.15)
+        assert canceled.done() is False
+        release_admission.set()
+        run_id = admitted.result(timeout=5)
+        assert canceled.result(timeout=5) is EntitlementStatus.CANCELED
+
+    with session_scope(factory) as session:
+        assert Repositories(session, context).runs.get(run_id).id == run_id
+        entitlement = CommercialPilotService(session, context, settings).entitlement()
+        assert entitlement.status is EntitlementStatus.CANCELED
+        assert entitlement.can_start_runs is False

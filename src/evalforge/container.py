@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from alembic import command
 from alembic.config import Config
 from openai import AsyncOpenAI
 from sqlalchemy import Connection, Engine
 
+from alembic import command
 from evalforge.config import Settings
 from evalforge.database import SessionFactory, create_database_engine, create_session_factory
 from evalforge.evaluation.adapters import (

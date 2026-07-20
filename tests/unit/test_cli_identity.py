@@ -203,6 +203,41 @@ def test_database_worker_rejects_sqlite_before_container_build(
     assert container_built is False
 
 
+def test_database_worker_honors_single_migration_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        database_url="postgresql+psycopg://evalforge:password@database.test/evalforge",
+        auto_migrate=False,
+        seed_demo=False,
+    )
+    observed_migrate: list[bool] = []
+
+    class FakeExecutor:
+        async def start(self) -> None:
+            raise KeyboardInterrupt
+
+    class FakeContainer:
+        executor = FakeExecutor()
+
+        async def close(self) -> None:
+            return None
+
+    def fake_build(_settings: Settings, *, migrate: bool) -> FakeContainer:
+        observed_migrate.append(migrate)
+        return FakeContainer()
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli, "build_container", fake_build)
+
+    result = CliRunner().invoke(cli.app, ["worker"])
+
+    assert result.exit_code == 0, result.output
+    assert observed_migrate == [False]
+
+
 def test_workspace_and_membership_provisioning_are_idempotent_and_content_minimized(
     identity_runner: CliRunner,
     shared_settings: Settings,

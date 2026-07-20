@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
+import secrets
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -22,6 +25,11 @@ _REAUTHENTICATION_KEY = "_evalforge_reauthentication_required"
 _SELECTED_RUN_KEY = "selected_run_id"
 _ACTIVE_RUN_KEY = "active_run_id"
 _FLASH_KEY = "_evalforge_flash"
+_COMMERCIAL_SESSION_KEY = "_evalforge_commercial_session_id"
+_COMMERCIAL_SOURCE_KEY = "_evalforge_commercial_acquisition_source"
+_COMMERCIAL_TRACKING_UNAVAILABLE_KEY = "_evalforge_commercial_tracking_unavailable"
+_COMMERCIAL_RECORDED_PREFIX = "_evalforge_commercial_recorded_"
+_ACQUISITION_SOURCE_PATTERN = re.compile(r"^[a-z0-9_-]{1,64}$")
 
 _RESOURCE_KEYS_TO_DROP = frozenset(
     {
@@ -41,6 +49,7 @@ _RESOURCE_PREFIXES_TO_DROP = (
     "model-enabled-",
     "edit-case-",
     "result-evidence-page-",
+    _COMMERCIAL_RECORDED_PREFIX,
 )
 
 
@@ -62,10 +71,13 @@ def initialize_state() -> None:
         _REAUTHENTICATION_KEY: False,
         "run_filter": "all",
         "result_page": 0,
+        _COMMERCIAL_TRACKING_UNAVAILABLE_KEY: False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    if _COMMERCIAL_SESSION_KEY not in st.session_state:
+        st.session_state[_COMMERCIAL_SESSION_KEY] = secrets.token_hex(12)
 
 
 def configure_client(
@@ -275,6 +287,74 @@ def pop_flash() -> dict[str, str] | None:
     return {"message": message, "tone": tone}
 
 
+def commercial_event_key(
+    name: str,
+    *,
+    once_per_identity: bool = False,
+    source_scope: str | None = None,
+) -> str:
+    """Return a content-free idempotency key scoped to this identity and workspace."""
+
+    normalized_name = name.strip().replace("_", "-")
+    compact_name = normalized_name.replace("-", "")
+    if (
+        not normalized_name
+        or len(normalized_name) > 32
+        or not compact_name.isascii()
+        or not compact_name.isalnum()
+        or normalized_name != normalized_name.casefold()
+    ):
+        raise ValueError("commercial event name has an invalid format")
+    identity = str(st.session_state.get(_IDENTITY_KEY, "local"))
+    workspace = selected_workspace_id() or "local"
+    session_id = str(st.session_state.get(_COMMERCIAL_SESSION_KEY, "session"))
+    if source_scope is not None and not _ACQUISITION_SOURCE_PATTERN.fullmatch(source_scope):
+        raise ValueError("commercial event scope has an invalid format")
+    key_scope = f"{identity}:{workspace}:{normalized_name}"
+    if source_scope is not None:
+        key_scope = f"{key_scope}:{source_scope}"
+    if not once_per_identity:
+        key_scope = f"{key_scope}:{session_id}"
+    digest = hashlib.sha256(key_scope.encode("utf-8")).hexdigest()[:32]
+    return f"dashboard-{normalized_name}-{digest}"
+
+
+def commercial_acquisition_source() -> str:
+    """Resolve one safe first-touch source and retain only that slug for this session."""
+
+    existing = st.session_state.get(_COMMERCIAL_SOURCE_KEY)
+    if isinstance(existing, str) and _ACQUISITION_SOURCE_PATTERN.fullmatch(existing):
+        return existing
+    values = st.query_params.get_all("source")
+    raw_value: object = values[0] if len(values) == 1 else None
+    source = (
+        raw_value
+        if isinstance(raw_value, str) and _ACQUISITION_SOURCE_PATTERN.fullmatch(raw_value)
+        else "direct"
+    )
+    st.session_state[_COMMERCIAL_SOURCE_KEY] = source
+    return source
+
+
+def commercial_event_recorded(idempotency_key: str) -> bool:
+    marker = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+    return st.session_state.get(f"{_COMMERCIAL_RECORDED_PREFIX}{marker}") is True
+
+
+def mark_commercial_event_recorded(idempotency_key: str) -> None:
+    marker = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+    st.session_state[f"{_COMMERCIAL_RECORDED_PREFIX}{marker}"] = True
+    st.session_state[_COMMERCIAL_TRACKING_UNAVAILABLE_KEY] = False
+
+
+def mark_commercial_tracking_unavailable() -> None:
+    st.session_state[_COMMERCIAL_TRACKING_UNAVAILABLE_KEY] = True
+
+
+def commercial_tracking_unavailable() -> bool:
+    return st.session_state.get(_COMMERCIAL_TRACKING_UNAVAILABLE_KEY) is True
+
+
 def _discard_client() -> None:
     existing = st.session_state.pop(_CLIENT_KEY, None)
     st.session_state.pop(_CLIENT_SCOPE_KEY, None)
@@ -291,6 +371,7 @@ def _clear_resource_state() -> None:
     st.session_state[_SELECTED_RUN_KEY] = None
     st.session_state[_ACTIVE_RUN_KEY] = None
     st.session_state[_FLASH_KEY] = None
+    st.session_state[_COMMERCIAL_TRACKING_UNAVAILABLE_KEY] = False
     st.session_state["run_filter"] = "all"
     st.session_state["result_page"] = 0
     st.session_state.pop(_PAGES_KEY, None)

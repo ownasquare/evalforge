@@ -13,10 +13,12 @@ from evalforge.api.dependencies import (
     ContainerDep,
     EditorWorkspaceDep,
     EvaluationServiceDep,
+    RunEntitledEditorWorkspaceDep,
     SessionDep,
     ViewerWorkspaceDep,
 )
 from evalforge.audit import AuditRecorder
+from evalforge.commercial import ActivationRecorder
 from evalforge.errors import NotFoundError
 from evalforge.exports import DisclosureProfile, build_export_package, disclose_run_evidence
 from evalforge.models import RunStatus
@@ -40,7 +42,7 @@ router = APIRouter(tags=["runs"])
 def preflight_run(
     data: EvaluationRunCreate,
     service: EvaluationServiceDep,
-    workspace: EditorWorkspaceDep,
+    workspace: RunEntitledEditorWorkspaceDep,
 ) -> dict[str, Any]:
     return service.preflight(data, workspace)
 
@@ -51,7 +53,7 @@ async def create_run(
     response: Response,
     service: EvaluationServiceDep,
     container: ContainerDep,
-    workspace: EditorWorkspaceDep,
+    workspace: RunEntitledEditorWorkspaceDep,
     idempotency_key: Annotated[
         str | None,
         Header(alias="Idempotency-Key", min_length=1, max_length=255),
@@ -157,6 +159,12 @@ def export_run(
         outcome="success",
         request_id=current_request_id(),
         metadata=audit_metadata,
+    )
+    ActivationRecorder(session).record_result_engagement_after_qualifying_completion(
+        workspace_id=workspace.workspace_id,
+        actor_user_id=workspace.user_id,
+        run_id=run.id,
+        source="export",
     )
     session.commit()
     if package is not None:

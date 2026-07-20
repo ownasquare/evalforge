@@ -42,13 +42,14 @@ def test_postgresql_url_is_accepted_without_connecting() -> None:
     assert settings.is_sqlite is False
 
 
-def test_postgresql_url_requires_the_installed_psycopg_driver() -> None:
-    with pytest.raises(ValidationError, match="postgresql\\+psycopg"):
-        Settings(
-            _env_file=None,
-            environment="test",
-            database_url="postgresql://evalforge@database/evalforge",
-        )
+def test_provider_postgresql_url_is_normalized_to_the_installed_driver() -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        database_url="postgresql://evalforge@database/evalforge",
+    )
+
+    assert settings.database_url == "postgresql+psycopg://evalforge@database/evalforge"
 
 
 def test_unsupported_database_backend_is_rejected() -> None:
@@ -106,6 +107,16 @@ def test_local_auth_is_the_loopback_default(database_url: str) -> None:
     assert settings.dashboard_host == "127.0.0.1"
 
 
+def test_local_auth_rejects_commercial_pilot_enforcement(database_url: str) -> None:
+    with pytest.raises(ValidationError, match="commercial_pilot_enabled"):
+        Settings(
+            _env_file=None,
+            environment="test",
+            database_url=database_url,
+            commercial_pilot_enabled=True,
+        )
+
+
 @pytest.mark.parametrize("field", ["api_host", "dashboard_host"])
 def test_local_auth_rejects_non_loopback_bindings(database_url: str, field: str) -> None:
     with pytest.raises(ValidationError, match="local auth mode"):
@@ -158,11 +169,33 @@ def test_complete_oidc_production_configuration_is_accepted(database_url: str) -
         oidc_jwks_cache_seconds=300,
         oidc_jwks_timeout_seconds=2.0,
         dashboard_oidc_provider="evalforge",
+        dashboard_public_base_url="https://app.evalforge.example",
+        commercial_pilot_enabled=True,
+        metrics_bearer_token="metrics-token-value",
     )
 
     assert settings.auth_mode == "oidc"
     assert settings.oidc_issuer == "https://identity.example"
     assert settings.oidc_algorithms == ["RS256", "ES256"]
+    assert settings.commercial_pilot_enabled is True
+
+
+def test_production_oidc_rejects_plaintext_dashboard_public_url(database_url: str) -> None:
+    with pytest.raises(ValidationError, match="dashboard public base URL must use HTTPS"):
+        Settings(
+            _env_file=None,
+            environment="production",
+            database_url=database_url,
+            auth_mode="oidc",
+            oidc_issuer="https://identity.example",
+            oidc_audience="evalforge-api",
+            oidc_jwks_url="https://identity.example/.well-known/jwks.json",
+            public_base_url="https://evalforge.example",
+            api_url="https://evalforge.example",
+            trusted_hosts=["evalforge.example"],
+            dashboard_public_base_url="http://app.evalforge.example",
+            metrics_bearer_token="metrics-token-value",
+        )
 
 
 def test_non_test_oidc_rejects_plaintext_dashboard_api_transport(database_url: str) -> None:

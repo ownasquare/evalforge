@@ -6,8 +6,9 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
-from alembic import context
 from sqlalchemy import Connection, pool
+
+from alembic import context
 
 SRC = Path(__file__).resolve().parents[2]
 if str(SRC) not in sys.path:

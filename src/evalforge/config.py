@@ -63,12 +63,14 @@ class Settings(BaseSettings):
     )
     log_level: LogLevel = "INFO"
     json_logs: bool = False
+    metrics_bearer_token: SecretStr | None = Field(default=None, exclude=True, repr=False)
 
     auth_mode: AuthMode = "local"
     oidc_issuer: str | None = None
     oidc_audience: str | None = Field(default=None, min_length=1, max_length=500)
     oidc_jwks_url: AnyHttpUrl | None = None
     public_base_url: AnyHttpUrl | None = None
+    dashboard_public_base_url: AnyHttpUrl | None = None
     oidc_algorithms: list[OidcAlgorithm] = Field(default_factory=_default_oidc_algorithms)
     oidc_clock_skew_seconds: int = Field(default=30, ge=0, le=300)
     oidc_jwks_cache_seconds: int = Field(default=3_600, ge=30, le=86_400)
@@ -95,6 +97,10 @@ class Settings(BaseSettings):
         default=10_000_000, ge=0, le=1_000_000_000_000
     )
     provider_timeout_seconds: float = Field(default=45.0, gt=0, le=600)
+
+    commercial_pilot_enabled: bool = False
+    hosted_trial_days: int = Field(default=14, ge=1, le=30)
+    hosted_trial_seat_limit: int = Field(default=5, ge=2, le=25)
 
     auto_migrate: bool = True
     seed_demo: bool = False
@@ -123,11 +129,21 @@ class Settings(BaseSettings):
         backend = url.get_backend_name()
         if backend not in {"sqlite", "postgresql"}:
             raise ValueError("database_url must use SQLite or PostgreSQL")
-        if backend == "postgresql" and url.drivername != "postgresql+psycopg":
-            raise ValueError("PostgreSQL database_url must use the postgresql+psycopg driver")
+        if backend == "postgresql":
+            if url.drivername == "postgresql":
+                return url.set(drivername="postgresql+psycopg").render_as_string(
+                    hide_password=False
+                )
+            if url.drivername != "postgresql+psycopg":
+                raise ValueError("PostgreSQL database_url must use the postgresql+psycopg driver")
         return candidate
 
-    @field_validator("openai_api_key", "compatible_api_key", mode="before")
+    @field_validator(
+        "openai_api_key",
+        "compatible_api_key",
+        "metrics_bearer_token",
+        mode="before",
+    )
     @classmethod
     def normalize_empty_secret(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
@@ -188,6 +204,8 @@ class Settings(BaseSettings):
         if self.executor_mode == "database_worker" and self.database_backend == "sqlite":
             raise ValueError("database_worker executor mode requires PostgreSQL")
         if self.auth_mode == "local":
+            if self.commercial_pilot_enabled:
+                raise ValueError("commercial_pilot_enabled requires shared OIDC mode")
             if not _is_loopback_host(self.api_host) or not _is_loopback_host(self.dashboard_host):
                 raise ValueError("local auth mode requires loopback API and dashboard bindings")
             if self.public_base_url is not None and not _is_loopback_host(
@@ -222,6 +240,12 @@ class Settings(BaseSettings):
                 raise ValueError("trusted_hosts must allow the public base URL host")
         if self.seed_demo:
             raise ValueError("seed_demo must be disabled in OIDC auth mode")
+        if (
+            self.dashboard_public_base_url is not None
+            and self.environment != "test"
+            and self.dashboard_public_base_url.scheme != "https"
+        ):
+            raise ValueError("OIDC dashboard public base URL must use HTTPS")
         return self
 
     @property

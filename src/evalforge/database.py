@@ -20,7 +20,7 @@ class Base(DeclarativeBase):
 
 
 SessionFactory = sessionmaker[Session]
-EXPECTED_SCHEMA_REVISION = "0005_calibration_reports"
+EXPECTED_SCHEMA_REVISION = "0006_commercial_pilot"
 REQUIRED_SCHEMA_COLUMNS = {
     "evaluation_runs": {
         "preflight_snapshot",
@@ -48,6 +48,31 @@ REQUIRED_SCHEMA_COLUMNS = {
         "lease_epoch",
         "heartbeat_at",
         "outcome",
+    },
+    "workspace_entitlements": {
+        "workspace_id",
+        "plan_code",
+        "status",
+        "seat_limit",
+        "current_period_end",
+    },
+    "billing_events": {
+        "workspace_id",
+        "provider",
+        "provider_event_id",
+        "payload_sha256",
+    },
+    "team_pilot_requests": {
+        "workspace_id",
+        "requested_by_user_id",
+        "status",
+        "idempotency_key",
+    },
+    "activation_events": {
+        "workspace_id",
+        "name",
+        "event_key",
+        "run_id",
     },
 }
 

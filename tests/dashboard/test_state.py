@@ -119,3 +119,93 @@ def test_mutation_access_follows_local_and_workspace_roles(monkeypatch) -> None:
     for role in ("editor", "admin", "owner"):
         state.select_workspace(WorkspaceOption("workspace-1", "Quality", role))
         assert state.can_edit() is True
+
+
+def test_commercial_event_keys_are_content_free_and_workspace_scoped(monkeypatch) -> None:
+    session: dict[str, object] = {}
+    monkeypatch.setattr(state.st, "session_state", session)
+    state.initialize_state()
+    state.sync_identity("private-identity-fingerprint")
+    state.select_workspace(WorkspaceOption("workspace-1", "Quality", "owner"))
+
+    first = state.commercial_event_key("upgrade-view")
+    repeated = state.commercial_event_key("upgrade-view")
+    state.mark_commercial_event_recorded(first)
+
+    assert first == repeated
+    assert "private-identity-fingerprint" not in first
+    assert "workspace-1" not in first
+    assert state.commercial_event_recorded(first) is True
+    assert state.commercial_tracking_unavailable() is False
+
+    state.mark_commercial_tracking_unavailable()
+    assert state.commercial_tracking_unavailable() is True
+
+    state.select_workspace(WorkspaceOption("workspace-2", "Safety", "owner"))
+    second = state.commercial_event_key("upgrade-view")
+
+    assert second != first
+    assert state.commercial_event_recorded(first) is False
+
+
+def test_signup_event_key_is_stable_for_an_identity(monkeypatch) -> None:
+    session: dict[str, object] = {}
+    monkeypatch.setattr(state.st, "session_state", session)
+    state.initialize_state()
+    state.sync_identity("fingerprint")
+    state.select_workspace(WorkspaceOption("workspace-1", "Quality", "owner"))
+
+    key = state.commercial_event_key("signup", once_per_identity=True)
+    session["_evalforge_commercial_session_id"] = "another-session"
+
+    assert state.commercial_event_key("signup", once_per_identity=True) == key
+
+
+def test_commercial_acquisition_source_is_safe_and_first_touch(monkeypatch) -> None:
+    class QueryParams:
+        source = "github_launch"
+
+        @classmethod
+        def get_all(cls, _name: str) -> list[str]:
+            return [cls.source]
+
+    session: dict[str, object] = {}
+    monkeypatch.setattr(state.st, "session_state", session)
+    monkeypatch.setattr(state.st, "query_params", QueryParams())
+    state.initialize_state()
+
+    assert state.commercial_acquisition_source() == "github_launch"
+    QueryParams.source = "later_campaign"
+    assert state.commercial_acquisition_source() == "github_launch"
+    assert session["_evalforge_commercial_acquisition_source"] == "github_launch"
+
+
+def test_commercial_acquisition_source_discards_arbitrary_query_text(monkeypatch) -> None:
+    unsafe_value = "Email=person@example.test&campaign=private"
+
+    class QueryParams:
+        @staticmethod
+        def get_all(_name: str) -> list[str]:
+            return [unsafe_value]
+
+    session: dict[str, object] = {}
+    monkeypatch.setattr(state.st, "session_state", session)
+    monkeypatch.setattr(state.st, "query_params", QueryParams())
+    state.initialize_state()
+
+    assert state.commercial_acquisition_source() == "direct"
+    assert unsafe_value not in repr(session)
+
+
+def test_commercial_acquisition_source_rejects_repeated_values(monkeypatch) -> None:
+    class RepeatedQueryParams:
+        @staticmethod
+        def get_all(_name: str) -> list[str]:
+            return ["github", "newsletter"]
+
+    session: dict[str, object] = {}
+    monkeypatch.setattr(state.st, "session_state", session)
+    monkeypatch.setattr(state.st, "query_params", RepeatedQueryParams())
+    state.initialize_state()
+
+    assert state.commercial_acquisition_source() == "direct"

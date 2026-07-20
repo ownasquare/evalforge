@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0003_identity_tenant_scope"

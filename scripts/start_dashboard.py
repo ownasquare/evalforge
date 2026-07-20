@@ -2,31 +2,43 @@
 
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 import tomllib
 from collections.abc import Mapping
+from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from streamlit.web import cli as streamlit_cli
 
 from evalforge.config import Settings, get_settings
-from evalforge.demo import DASHBOARD_PROVIDER_SECRET_KEYS, dashboard_environment
+from evalforge.demo import DASHBOARD_SERVER_SECRET_OVERRIDES, dashboard_environment
 
 _AUTH_FILE_ENV = "EVALFORGE_STREAMLIT_AUTH_FILE"
 _REQUIRED_PROVIDER_KEYS = ("client_id", "client_secret", "server_metadata_url")
+_DASHBOARD_AUTH_ENV_KEYS = {
+    "client_id": "EVALFORGE_DASHBOARD_OIDC_CLIENT_ID",
+    "client_secret": "EVALFORGE_DASHBOARD_OIDC_CLIENT_SECRET",
+    "server_metadata_url": "EVALFORGE_DASHBOARD_OIDC_SERVER_METADATA_URL",
+    "cookie_secret": "EVALFORGE_DASHBOARD_OIDC_COOKIE_SECRET",
+}
+_SERVER_ONLY_SECRET_ENV_KEYS = tuple(DASHBOARD_SERVER_SECRET_OVERRIDES)
 
 
 def main() -> None:
     """Replace this process with Streamlit after settings validation succeeds."""
 
     settings = get_settings()
-    auth_file = _validated_auth_file(settings)
+    auth_file, temporary_auth_file = _resolved_auth_file(settings)
     dashboard_host = settings.dashboard_host
     dashboard_port = settings.dashboard_port
     sanitized_environment = dashboard_environment(settings)
-    previous_secrets = {key: os.environ.get(key) for key in DASHBOARD_PROVIDER_SECRET_KEYS}
-    os.environ.update({key: sanitized_environment[key] for key in DASHBOARD_PROVIDER_SECRET_KEYS})
+    withheld_keys = (*_SERVER_ONLY_SECRET_ENV_KEYS, *_DASHBOARD_AUTH_ENV_KEYS.values())
+    previous_secrets = {key: os.environ.get(key) for key in withheld_keys}
+    os.environ.update({key: sanitized_environment[key] for key in _SERVER_ONLY_SECRET_ENV_KEYS})
+    os.environ.update({key: "" for key in _DASHBOARD_AUTH_ENV_KEYS.values()})
     cache_clear = getattr(get_settings, "cache_clear", None)
     if callable(cache_clear):
         cache_clear()
@@ -52,17 +64,24 @@ def main() -> None:
         cache_clear = getattr(get_settings, "cache_clear", None)
         if callable(cache_clear):
             cache_clear()
+        if temporary_auth_file and auth_file is not None:
+            auth_file.unlink(missing_ok=True)
 
 
-def _validated_auth_file(settings: Settings) -> Path | None:
-    """Validate the mounted Streamlit OIDC secret before starting the dashboard."""
+def _resolved_auth_file(settings: Settings) -> tuple[Path | None, bool]:
+    """Resolve mounted auth or materialize secret env values into a short-lived file."""
 
     if settings.auth_mode != "oidc":
-        return None
+        return None, False
     configured_path = os.getenv(_AUTH_FILE_ENV, "").strip()
-    if not configured_path:
-        raise RuntimeError("OIDC dashboard auth configuration is not mounted.")
-    auth_file = Path(configured_path)
+    if configured_path:
+        auth_file = Path(configured_path)
+        _validate_auth_file(auth_file, settings)
+        return auth_file, False
+    return _materialize_environment_auth(settings), True
+
+
+def _validate_auth_file(auth_file: Path, settings: Settings) -> None:
     if not auth_file.is_absolute() or not auth_file.is_file():
         raise RuntimeError("OIDC dashboard auth configuration is unavailable.")
     try:
@@ -71,7 +90,79 @@ def _validated_auth_file(settings: Settings) -> Path | None:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise RuntimeError("OIDC dashboard auth configuration is unreadable.") from exc
     _validate_auth_document(document, settings)
+
+
+def _materialize_environment_auth(settings: Settings) -> Path:
+    public_base_url = settings.dashboard_public_base_url
+    if public_base_url is None:
+        raise RuntimeError(
+            "OIDC dashboard auth configuration is not mounted and its public URL is missing."
+        )
+    values = {
+        name: _required_environment_secret(environment_key)
+        for name, environment_key in _DASHBOARD_AUTH_ENV_KEYS.items()
+    }
+    document: dict[str, object] = {
+        "auth": {
+            "redirect_uri": f"{str(public_base_url).rstrip('/')}/oauth2callback",
+            "cookie_secret": values["cookie_secret"],
+            "expose_tokens": ["access"],
+            settings.dashboard_oidc_provider: {
+                "client_id": values["client_id"],
+                "client_secret": values["client_secret"],
+                "server_metadata_url": values["server_metadata_url"],
+            },
+        }
+    }
+    _validate_auth_document(document, settings)
+    descriptor, filename = tempfile.mkstemp(
+        prefix="evalforge-streamlit-auth-",
+        suffix=".toml",
+    )
+    auth_file = Path(filename)
+    try:
+        os.chmod(auth_file, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(_auth_document_toml(document, settings.dashboard_oidc_provider))
+        _validate_auth_file(auth_file, settings)
+    except Exception:
+        with suppress(OSError):
+            os.close(descriptor)
+        auth_file.unlink(missing_ok=True)
+        raise
     return auth_file
+
+
+def _required_environment_secret(environment_key: str) -> str:
+    value = os.getenv(environment_key, "")
+    if not value or value != value.strip():
+        raise RuntimeError(
+            "OIDC dashboard auth configuration is not mounted and secret values are incomplete."
+        )
+    return value
+
+
+def _auth_document_toml(document: Mapping[str, object], provider_name: str) -> str:
+    auth = document["auth"]
+    if not isinstance(auth, Mapping):  # pragma: no cover - internal invariant
+        raise RuntimeError("OIDC dashboard auth configuration is invalid.")
+    provider = auth[provider_name]
+    if not isinstance(provider, Mapping):  # pragma: no cover - internal invariant
+        raise RuntimeError("OIDC dashboard auth configuration is invalid.")
+    return "\n".join(
+        (
+            "[auth]",
+            f"redirect_uri = {json.dumps(auth['redirect_uri'])}",
+            f"cookie_secret = {json.dumps(auth['cookie_secret'])}",
+            'expose_tokens = ["access"]',
+            "",
+            f"[auth.{provider_name}]",
+            f"client_id = {json.dumps(provider['client_id'])}",
+            f"client_secret = {json.dumps(provider['client_secret'])}",
+            f"server_metadata_url = {json.dumps(provider['server_metadata_url'])}",
+            "",
+        )
+    )
 
 
 def _validate_auth_document(document: Mapping[str, object], settings: Settings) -> None:

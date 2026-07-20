@@ -1,0 +1,152 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+# Hosted-pilot reference topology. Render prompts for every sync:false value on first creation.
+# Public URLs and host allowlists are explicit because Blueprint variables are not interpolated.
+services:
+  - type: web
+    name: evalforge-pilot-api
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerContext: .
+    dockerfilePath: ./Dockerfile.api
+    autoDeployTrigger: checksPass
+    healthCheckPath: /health/ready
+    preDeployCommand: evalforge migrate
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: EVALFORGE_ENVIRONMENT
+        value: production
+      - key: EVALFORGE_DATABASE_URL
+        fromDatabase:
+          name: evalforge-pilot-postgres
+          property: connectionString
+      - key: EVALFORGE_AUTO_MIGRATE
+        value: "false"
+      - key: EVALFORGE_SEED_DEMO
+        value: "false"
+      - key: EVALFORGE_API_HOST
+        value: 0.0.0.0
+      - key: EVALFORGE_API_PORT
+        value: "10000"
+      - key: EVALFORGE_API_URL
+        sync: false
+      - key: EVALFORGE_PUBLIC_BASE_URL
+        sync: false
+      - key: EVALFORGE_CORS_ORIGINS
+        sync: false
+      - key: EVALFORGE_TRUSTED_HOSTS
+        sync: false
+      - key: EVALFORGE_JSON_LOGS
+        value: "true"
+      - key: EVALFORGE_AUTH_MODE
+        value: oidc
+      - key: EVALFORGE_OIDC_ISSUER
+        sync: false
+      - key: EVALFORGE_OIDC_AUDIENCE
+        sync: false
+      - key: EVALFORGE_OIDC_JWKS_URL
+        sync: false
+      # Health endpoints remain public; /metrics requires this backend-only Bearer token.
+      - key: EVALFORGE_METRICS_BEARER_TOKEN
+        sync: false
+      - key: EVALFORGE_EXECUTOR_MODE
+        value: api_only
+      - key: EVALFORGE_REAL_RUNS_ENABLED
+        value: "false"
+      - key: EVALFORGE_COMMERCIAL_PILOT_ENABLED
+        value: "true"
+      - key: EVALFORGE_HOSTED_TRIAL_DAYS
+        value: "14"
+      - key: EVALFORGE_HOSTED_TRIAL_SEAT_LIMIT
+        value: "5"
+
+  - type: web
+    name: evalforge-pilot-dashboard
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerContext: .
+    dockerfilePath: ./Dockerfile.dashboard
+    autoDeployTrigger: checksPass
+    healthCheckPath: /_stcore/health
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: EVALFORGE_ENVIRONMENT
+        value: production
+      - key: EVALFORGE_API_URL
+        sync: false
+      - key: EVALFORGE_PUBLIC_BASE_URL
+        sync: false
+      - key: EVALFORGE_DASHBOARD_PUBLIC_BASE_URL
+        sync: false
+      - key: EVALFORGE_TRUSTED_HOSTS
+        sync: false
+      - key: EVALFORGE_API_HOST
+        value: 0.0.0.0
+      - key: EVALFORGE_API_PORT
+        value: "10000"
+      - key: EVALFORGE_DASHBOARD_HOST
+        value: 0.0.0.0
+      - key: EVALFORGE_DASHBOARD_PORT
+        value: "10000"
+      - key: EVALFORGE_AUTH_MODE
+        value: oidc
+      - key: EVALFORGE_OIDC_ISSUER
+        sync: false
+      - key: EVALFORGE_OIDC_AUDIENCE
+        sync: false
+      - key: EVALFORGE_OIDC_JWKS_URL
+        sync: false
+      - key: EVALFORGE_DASHBOARD_OIDC_PROVIDER
+        value: evalforge
+      - key: EVALFORGE_DASHBOARD_OIDC_CLIENT_ID
+        sync: false
+      - key: EVALFORGE_DASHBOARD_OIDC_CLIENT_SECRET
+        sync: false
+      - key: EVALFORGE_DASHBOARD_OIDC_SERVER_METADATA_URL
+        sync: false
+      - key: EVALFORGE_DASHBOARD_OIDC_COOKIE_SECRET
+        generateValue: true
+      - key: EVALFORGE_COMMERCIAL_PILOT_ENABLED
+        value: "true"
+      - key: EVALFORGE_HOSTED_TRIAL_DAYS
+        value: "14"
+      - key: EVALFORGE_HOSTED_TRIAL_SEAT_LIMIT
+        value: "5"
+
+  - type: worker
+    name: evalforge-pilot-worker
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerContext: .
+    dockerfilePath: ./Dockerfile.api
+    dockerCommand: evalforge worker
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 120
+    envVars:
+      - key: EVALFORGE_ENVIRONMENT
+        value: production
+      - key: EVALFORGE_DATABASE_URL
+        fromDatabase:
+          name: evalforge-pilot-postgres
+          property: connectionString
+      - key: EVALFORGE_AUTO_MIGRATE
+        value: "false"
+      - key: EVALFORGE_SEED_DEMO
+        value: "false"
+      - key: EVALFORGE_EXECUTOR_MODE
+        value: database_worker
+      - key: EVALFORGE_REAL_RUNS_ENABLED
+        value: "false"
+      - key: EVALFORGE_JSON_LOGS
+        value: "true"
+
+databases:
+  - name: evalforge-pilot-postgres
+    plan: basic-256mb
+    region: oregon
+    postgresMajorVersion: "17"
+    databaseName: evalforge
+    user: evalforge
+    ipAllowList: []

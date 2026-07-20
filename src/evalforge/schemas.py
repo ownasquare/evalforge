@@ -14,11 +14,16 @@ from jsonschema.validators import validator_for
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from evalforge.models import (
+    ActivationEventName,
     ApiMode,
+    EntitlementStatus,
+    EvaluationFrequency,
     MetricApplicability,
     MetricDirection,
+    PlanCode,
     ResultStatus,
     RunStatus,
+    TeamPilotRequestStatus,
 )
 
 JSONDict = dict[str, Any]
@@ -819,6 +824,94 @@ class EvaluationRunPreflightRead(StrictSchema):
     spend_limit_basis: str
     inapplicable_counts: dict[str, int]
     limits: dict[str, int]
+
+
+class CommercialPlanRead(StrictSchema):
+    code: PlanCode
+    name: str
+    audience: str
+    price_label: str
+    features: list[str]
+    self_hosted: bool
+    available: bool
+
+
+class WorkspaceEntitlementRead(StrictSchema):
+    workspace_id: UUID
+    plan_code: PlanCode
+    status: EntitlementStatus
+    seat_limit: int = Field(ge=1)
+    active_memberships: int = Field(ge=0)
+    source: str
+    current_period_start: datetime | None = None
+    current_period_end: datetime | None = None
+    can_start_runs: bool
+    hosted: bool
+    commercial_pilot_enabled: bool
+
+
+class TeamPilotRequestCreate(StrictSchema):
+    requested_seats: int = Field(ge=2, le=250)
+    evaluation_frequency: EvaluationFrequency
+    security_review_required: bool = False
+
+
+class TeamPilotRequestRead(StrictSchema):
+    id: UUID
+    workspace_id: UUID
+    requested_by_user_id: UUID
+    requested_seats: int = Field(ge=2, le=250)
+    evaluation_frequency: EvaluationFrequency
+    security_review_required: bool
+    status: TeamPilotRequestStatus
+    created_at: datetime
+    updated_at: datetime
+    canceled_at: datetime | None = None
+
+
+class ClientActivationEventCreate(StrictSchema):
+    name: Literal[
+        "landing",
+        "signup",
+        "upgrade_view",
+    ]
+    source: str = Field(default="direct", min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    surface: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+
+
+class ActivationEventRead(StrictSchema):
+    id: UUID
+    workspace_id: UUID
+    actor_user_id: UUID | None = None
+    name: ActivationEventName
+    source: str
+    run_id: UUID | None = None
+    created_at: datetime
+
+
+class BillingEventRead(StrictSchema):
+    id: UUID
+    workspace_id: UUID
+    actor_user_id: UUID | None = None
+    provider: str
+    event_type: str
+    payload_sha256: str = Field(min_length=64, max_length=64)
+    created_at: datetime
+
+
+class CommercialFunnelRead(StrictSchema):
+    event_counts: dict[ActivationEventName, int]
+    unique_actors: dict[ActivationEventName, int]
+    acquisition_sources: dict[str, int]
+    activated_runs: int = Field(ge=0)
+    activation_duration_sample_size: int = Field(ge=0)
+    activation_duration_excluded_actors: int = Field(ge=0)
+    activation_duration_p50_seconds: float | None = Field(default=None, ge=0)
+    activation_duration_p90_seconds: float | None = Field(default=None, ge=0)
+    pending_team_requests: int = Field(ge=0)
+    total_team_requests: int = Field(ge=0)
+    first_event_at: datetime | None = None
+    last_event_at: datetime | None = None
 
 
 class MetaRead(StrictSchema):

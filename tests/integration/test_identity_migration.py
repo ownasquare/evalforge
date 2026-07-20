@@ -5,14 +5,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from sqlalchemy import MetaData, inspect, select, text
 from sqlalchemy.engine import Connection, Engine
 
-from evalforge.database import check_database_readiness, create_database_engine
+from alembic import command
+from evalforge.database import (
+    EXPECTED_SCHEMA_REVISION,
+    check_database_readiness,
+    create_database_engine,
+)
 from evalforge.models import Dataset
 from evalforge.security.permissions import (
     LOCAL_ISSUER,
@@ -437,7 +441,7 @@ def test_populated_0002_identity_migration_preserves_evidence_and_scopes_every_r
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert revision == "0005_calibration_reports"
+        assert revision == EXPECTED_SCHEMA_REVISION
         assert schema_differences == []
         assert check_database_readiness(migrated_engine) is True
 
@@ -476,7 +480,7 @@ def test_populated_0002_identity_migration_preserves_evidence_and_scopes_every_r
         with verification_engine.connect() as connection:
             assert (
                 connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                == "0005_calibration_reports"
+                == EXPECTED_SCHEMA_REVISION
             )
     finally:
         verification_engine.dispose()
